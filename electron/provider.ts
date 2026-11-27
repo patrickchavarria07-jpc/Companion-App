@@ -64,11 +64,15 @@ export function buildRequest(
   if (provider !== 'ollama' && !key) throw new Error('Add an API key in Settings before sending a message.');
   const withSystem = systemPrompt ? [{ role: 'system', content: systemPrompt }, ...messages] : messages;
   if (provider === 'gemini') {
+    const modelId = model.replace(/^models\//, '');
     return {
       format: 'gemini',
-      url: 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model.replace(/^models\//, '')) + ':streamGenerateContent?alt=sse',
+      url: 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(modelId) + ':streamGenerateContent?alt=sse',
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'x-goog-api-key': key },
       body: {
+        ...(modelId === 'gemini-3.5-flash' && {
+          generationConfig: { thinkingConfig: { thinkingLevel: 'LOW' } },
+        }),
         systemInstruction: systemPrompt ? { parts: [{ text: systemPrompt }] } : undefined,
         contents: messages.map(message => ({
           role: message.role === 'assistant' ? 'model' : 'user',

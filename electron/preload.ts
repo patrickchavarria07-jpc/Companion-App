@@ -13,7 +13,7 @@ const buddy: Buddy = {
     return ipcRenderer.invoke('buddy:attach', path);
   },
   remove: name => ipcRenderer.invoke('buddy:remove', name),
-  chat: (id, messages) => ipcRenderer.invoke('buddy:chat', id, messages),
+  chat: (id, messages, search) => ipcRenderer.invoke('buddy:chat', id, messages, search),
   cancel: () => ipcRenderer.send('buddy:cancel'),
   onChunk: callback => {
     const listener = (_event: Electron.IpcRendererEvent, chunk: StreamEvent) => callback(chunk);

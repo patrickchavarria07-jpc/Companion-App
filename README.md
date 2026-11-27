@@ -33,6 +33,12 @@ Chat and attachments live in memory until you quit or the window reloads. **New 
 
 PDFs need a readable text layer. Run OCR separately for scanned PDFs, then attach the resulting file. The app accepts up to 10 attachments, files up to 20 MB, PDFs up to 300 pages, and up to 60,000 extracted characters across attachments. A conversation can hold up to 100 messages and 100,000 characters. PDFs are parsed in an isolated utility process that is stopped after 60 seconds. If a model sends nothing for 2 minutes, the request stops and keeps any partial reply.
 
+## Search the web
+
+Get a [Tavily API key](https://app.tavily.com/) to use live web results alongside your existing chat model. For `npm run dev`, add `TAVILY_API_KEY=your_key_here` to your local `.env` file (create it from `.env.example` if needed). For `npm start` or an installed build, set `TAVILY_API_KEY` in the environment that launches the app. Restart Research Buddy after setting the key.
+
+Type a question of up to 400 characters and click **Web search**. Tavily receives the current question. The selected chat model receives excerpts from up to five results, along with the usual chat context. Numbered citations refer to the clickable **Web sources** below the reply. **Send** and Enter use regular chat. Each search uses one basic Tavily search credit.
+
 ## Develop
 
 ```sh

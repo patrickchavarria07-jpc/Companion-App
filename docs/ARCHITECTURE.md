@@ -43,7 +43,7 @@ All handlers reject calls that don't come from the app window's main frame, and 
 | `buddy:save` | invoke | `SettingsUpdate` → `Settings` |
 | `buddy:attach` | invoke | absolute file path (from `webUtils.getPathForFile`) → `Attachment` |
 | `buddy:remove` | invoke | attachment name |
-| `buddy:chat` | invoke | `id, Message[]` → `ChatResult` (`{ text, error? }`) when the reply ends |
+| `buddy:chat` | invoke | `id, Message[], search?` → `ChatResult` (`{ text, error?, sources? }`) when the reply ends |
 | `buddy:cancel` | send | aborts the active reply |
 | `buddy:chunk` | main → renderer | `{ id, text }` for each streamed piece of the reply |
 
@@ -60,7 +60,7 @@ All handlers reject calls that don't come from the app window's main frame, and 
 - Links in replies open in the system browser, and only for `http`, `https`, and `mailto` URLs (`isExternalUrl`). Raw HTML in replies is shown as text, and images are shown as links.
 - Untrusted PDFs are parsed outside the main process. Extracted document text is labelled as source material, and the default system prompt tells the model not to follow instructions found in it.
 - When the window reloads or the renderer crashes, attachments are cleared and the active reply is aborted. That way the main process never holds documents the UI no longer shows.
-- API keys are stored encrypted. Packaged builds disable Electron's `RunAsNode`, `NODE_OPTIONS`, and inspector fuses.
+- API keys saved in Settings are stored encrypted. Tavily uses the main process's `TAVILY_API_KEY` environment variable. An opt-in search sends the latest question to Tavily and adds bounded excerpts to the model request as untrusted source material. Packaged builds disable Electron's `RunAsNode`, `NODE_OPTIONS`, and inspector fuses.
 
 ## Testing
 

@@ -26,7 +26,8 @@ export type SettingsUpdate = Omit<Settings, 'keySource'> & { apiKey: string; cle
 export type Message = { role: 'assistant' | 'user'; content: string };
 export type Attachment = { name: string; characters: number };
 export type StreamEvent = { id: string; text: string };
-export type ChatResult = { text: string; error?: string };
+export type WebSource = { title: string; url: string };
+export type ChatResult = { text: string; error?: string; sources?: WebSource[] };
 
 export interface Buddy {
   expand(open: boolean): Promise<void>;
@@ -36,7 +37,7 @@ export interface Buddy {
   save(settings: SettingsUpdate): Promise<Settings>;
   attach(file: File): Promise<Attachment>;
   remove(name: string): Promise<void>;
-  chat(id: string, messages: Message[]): Promise<ChatResult>;
+  chat(id: string, messages: Message[], search?: boolean): Promise<ChatResult>;
   cancel(): void;
   onChunk(callback: (chunk: StreamEvent) => void): () => void;
 }

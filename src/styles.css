@@ -75,6 +75,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .markdown li + li { margin-top: 2px; }
 .markdown h1, .markdown h2, .markdown h3, .markdown h4 { font-size: 14px; margin: 12px 0 6px; }
 .markdown a { color: var(--accent); }
+.web-sources { margin-top: 10px; }
 .markdown code { font-family: ui-monospace, 'Cascadia Code', Consolas, monospace; font-size: 12px; background: #111827; border-radius: 4px; padding: 1px 4px; }
 .markdown pre { background: #111827; border: 1px solid var(--edge); border-radius: 8px; padding: 8px 10px; overflow: auto; }
 .markdown pre code { background: none; padding: 0; overflow-wrap: normal; white-space: pre; }
@@ -100,6 +101,9 @@ textarea { resize: vertical; }
 .primary, .secondary { padding: 8px 11px; font-weight: 650; font-size: 12px; }
 .primary { color: #102720; background: var(--accent); }
 .secondary { border-color: #638b82; }
+.chat-actions { display: flex; align-items: center; gap: 10px; margin-top: 7px; }
+.search-provider { color: var(--muted); font-size: 11px; }
+.chat-actions .reset { margin-top: 0; }
 .attachments { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 5px; max-height: 82px; overflow: auto; }
 .attachment { display: inline-flex; align-items: center; max-width: 100%; border-radius: 6px; font-size: 11px; background: #25374b; padding: 2px 4px 2px 7px; }
 .attachment span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

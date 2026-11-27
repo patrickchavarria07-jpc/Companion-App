@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent, type PointerEvent, type UIEvent } from 'react';
-import type { Attachment, Message, Settings } from '../shared/protocol';
+import type { Attachment, Message, Settings, WebSource } from '../shared/protocol';
 import { api, errorText, providerNames } from './api';
 import { Bot } from './Bot';
 import { Markdown } from './Markdown';
@@ -12,7 +12,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<Settings>();
   const [files, setFiles] = useState<Attachment[]>([]);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<(Message & { sources?: WebSource[] })[]>([]);
   const [answer, setAnswer] = useState('');
   const [draft, setDraft] = useState('');
   const [status, setStatus] = useState('');
@@ -120,7 +120,7 @@ export default function App() {
     void attach(Array.from(event.dataTransfer.files));
   }
 
-  async function send(text: string) {
+  async function send(text: string, search = false) {
     if (!text.trim() || pending.current) return;
     pending.current = true;
     const user: Message = { role: 'user', content: text.trim() };
@@ -133,19 +133,21 @@ export default function App() {
     setDraft('');
     setAnswer('');
     setError('');
-    setStatus('Thinking…');
+    setStatus(search ? 'Searching the web and preparing a reply…' : 'Thinking…');
     setBusy(true);
     setSending(true);
     let failed = false;
+    let sources: WebSource[] | undefined;
     try {
-      const result = await api.chat(active.id, conversation);
+      const result = await api.chat(active.id, conversation.map(({ role, content }) => ({ role, content })), search);
       active.text = result.text;
+      sources = result.sources;
       if (result.error) throw new Error(result.error);
     } catch (error) {
       failed = true;
       setError(errorText(error));
     } finally {
-      if (active.text) setMessages([...conversation, { role: 'assistant', content: active.text }]);
+      if (active.text) setMessages([...conversation, { role: 'assistant', content: active.text, sources }]);
       else if (failed || active.stopped) {
         setMessages(messages);
         setDraft(user.content);
@@ -228,6 +230,12 @@ export default function App() {
             {messages.map((message, index) => <article className={'message ' + message.role} key={index}>
               <strong>{message.role === 'user' ? 'You' : 'Buddy'}</strong>
               {message.role === 'assistant' ? <Markdown text={message.content} /> : <div className="plain">{message.content}</div>}
+              {!!message.sources?.length && <div className="markdown web-sources">
+                <strong>Web sources</strong>
+                <ol>{message.sources.map(source => <li key={source.url}>
+                  <a href={source.url} target="_blank" rel="noreferrer noopener" title={source.url}>{source.title}</a>
+                </li>)}</ol>
+              </div>}
             </article>)}
             {answer && <article className="message assistant"><strong>Buddy</strong><Markdown text={answer} /></article>}
             <div ref={bottom} />
@@ -261,7 +269,12 @@ export default function App() {
                 api.cancel();
               }}>Stop</button> : <button className="primary" disabled={busy || !draft.trim()}>Send</button>}
             </form>
-            {!!messages.length && <button className="reset" disabled={busy} onClick={() => { setMessages([]); setError(''); setStatus(''); }}>New chat</button>}
+            <div className="chat-actions">
+              <button type="button" className="secondary" disabled={busy || !draft.trim()}
+                aria-describedby="web-search-provider" onClick={() => void send(draft, true)}>Web search</button>
+              <span className="search-provider" id="web-search-provider">Powered by Tavily</span>
+              {!!messages.length && <button className="reset" disabled={busy} onClick={() => { setMessages([]); setError(''); setStatus(''); }}>New chat</button>}
+            </div>
           </footer>
         </>}
     </main>

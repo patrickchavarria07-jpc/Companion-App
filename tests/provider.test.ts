@@ -63,9 +63,17 @@ describe('buildRequest', () => {
     expect(request.url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-x:streamGenerateContent?alt=sse');
     expect(request.url).not.toContain(key);
     expect(request.headers['x-goog-api-key']).toBe(key);
+    expect(request.body).not.toHaveProperty('generationConfig');
     expect(request.body).toMatchObject({
       systemInstruction: { parts: [{ text: 'Be helpful' }] },
       contents: [{ role: 'user' }, { role: 'model' }, { role: 'user' }],
+    });
+  });
+
+  it.each(['gemini-3.5-flash', 'models/gemini-3.5-flash'])('requests low thinking for %s', model => {
+    const request = buildRequest({ ...settings('gemini'), model }, key, messages);
+    expect(request.body).toMatchObject({
+      generationConfig: { thinkingConfig: { thinkingLevel: 'LOW' } },
     });
   });
 
