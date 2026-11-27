@@ -53,6 +53,18 @@ export function validateAttachmentPath(value: unknown): string {
   return value;
 }
 
+/** Links from model replies may only open in the system browser or mail client. */
+export function isExternalUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 2048) return false;
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'mailto:') return true;
+    return (url.protocol === 'https:' || url.protocol === 'http:') && Boolean(url.hostname) && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
 /** Adds attached source material to the latest user message. */
 export function withAttachments(messages: Message[], attachments: { name: string; text: string }[]): Message[] {
   if (!attachments.length) return messages;

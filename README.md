@@ -1,6 +1,6 @@
 # Research Buddy
 
-Research Buddy is a floating Electron desktop companion for asking questions and analyzing PDF or TXT files.
+Research Buddy is a floating Electron desktop companion for asking questions and analyzing PDF or TXT files. (The repository is named Companion-App; the app is Research Buddy.)
 
 ## Run locally
 
@@ -13,7 +13,9 @@ npm run dev
 
 On Windows PowerShell, use `npm.cmd` if script execution is disabled.
 
-Drag the bot to move it. Click it to open chat. Drop a PDF or TXT onto the bot or panel, or use the attachment button. Once extraction finishes, ask a question or use **Summarize attachments**. The header lets you open Settings, collapse the panel, or quit.
+Drag the bot to move it. Click it to open chat, and drag the panel by its header. The app remembers where you left it. Drop a PDF or TXT onto the bot or panel, or use the attachment button. Files with the same name from different folders are numbered, for example `notes (2).txt`. Once extraction finishes, ask a question or use **Summarize attachments**. The header lets you open Settings, collapse the panel, or quit.
+
+Replies are rendered as Markdown. Web links open in your default browser, and images appear as links rather than loading remote content. If you scroll up while a reply is streaming, the view stays where you are; use **↓ Latest** to jump back down.
 
 ## Connect a provider
 
@@ -34,12 +36,15 @@ PDFs need a readable text layer. Run OCR separately for scanned PDFs, then attac
 ## Develop
 
 ```sh
+npm run dev       # hot reload: UI edits update in place, main-process edits restart the app
 npm test          # unit tests (Vitest)
 npm run lint      # ESLint
 npm run typecheck # renderer and Electron TypeScript projects
 ```
 
 The code is split into `electron/` (main process: window, IPC handlers, providers, settings, document extraction), `electron/preload.ts` (the `window.buddy` bridge), `src/` (React UI), and `shared/protocol.ts` (types shared across the IPC boundary). Tests live in `tests/`. CI (`.github/workflows/ci.yml`) runs lint, tests, the build, and a production dependency audit, then packages an unpacked app on Windows, macOS, and Linux.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and pull request checklist, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for processes, IPC channels, and the security model.
 
 ## Build
 
@@ -49,4 +54,19 @@ npm start
 npm run dist
 ```
 
-`build` type-checks and compiles the Electron and React code. `start` runs that build. `dist` packages the app into `release/` with an NSIS installer on Windows, a DMG on macOS, or an AppImage on Linux. Build on the target OS for release packaging. Packaged builds disable Electron's `RunAsNode`, `NODE_OPTIONS`, and inspector fuses and only load the app from its asar archive. Code signing and notarization are not configured yet. On Linux the widget uses X11, or XWayland on Wayland desktops, for programmatic window positioning. Always-on-top behavior can depend on the window manager.
+`build` cleans old output, type-checks, and compiles the Electron and React code. `start` builds and then runs the app. `dist` packages the app into `release/` with an NSIS installer on Windows, a DMG on macOS, or an AppImage on Linux. Build on the target OS for release packaging. Packaged builds disable Electron's `RunAsNode`, `NODE_OPTIONS`, and inspector fuses and only load the app from its asar archive. Code signing and notarization are not configured yet. On Linux the widget uses X11, or XWayland on Wayland desktops, for programmatic window positioning. Always-on-top behavior can depend on the window manager.
+
+## Troubleshooting
+
+- **"Unlock or configure your system keyring" on Linux.** Saving a key needs a Secret Service keyring, such as GNOME Keyring or KWallet. Install one and unlock it, or set the provider's `*_API_KEY` environment variable instead.
+- **"Could not unlock your saved API key".** The keyring that encrypted the key is unavailable or has changed. Unlock it, or enter the key again in Settings.
+- **Settings were reset.** The settings file was unreadable. The old copy is next to the new one as `settings.json.corrupt-<timestamp>` (see the folders above).
+- **The widget doesn't appear or can't be positioned on Linux.** The app runs through X11. On Wayland, make sure XWayland is available. Always-on-top behavior depends on the window manager.
+- **The widget is off-screen after unplugging a monitor.** It is moved onto the nearest display at the next launch. To reset the saved position, delete `window-state.json` from the settings folder.
+- **"Could not connect to Ollama".** Start Ollama (`ollama serve`), check `OLLAMA_HOST` if you use a non-default address, and pull the model you selected.
+- **"No readable text found".** The PDF is probably scanned. Run OCR on it first.
+- **Rate limit or credits errors.** Free tiers have quotas. Wait, pick another model, or use a smaller attachment, since the full attachment text is sent with every message.
+
+## License
+
+[MIT](LICENSE)

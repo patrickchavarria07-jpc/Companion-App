@@ -13,6 +13,7 @@
     "shared",
     "tests",
     "vite.config.ts",
+    "vite.csp.ts",
     "vitest.config.ts"
   ]
 }

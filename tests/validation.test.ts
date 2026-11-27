@@ -1,7 +1,7 @@
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AttachmentStore } from '../electron/attachments';
-import { isRequestId, validateAttachmentPath, validateMessages, withAttachments } from '../electron/validation';
+import { isExternalUrl, isRequestId, validateAttachmentPath, validateMessages, withAttachments } from '../electron/validation';
 
 describe('validateMessages', () => {
   it('returns a clean copy of valid messages', () => {
@@ -46,6 +46,15 @@ describe('request helpers', () => {
     expect(() => validateAttachmentPath(resolve('notes.docx'))).toThrow('PDF or TXT');
   });
 
+  it('allows only web and mail links to open externally', () => {
+    expect(isExternalUrl('https://example.com/paper?id=1')).toBe(true);
+    expect(isExternalUrl('http://example.com')).toBe(true);
+    expect(isExternalUrl('mailto:someone@example.com')).toBe(true);
+    for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'ms-settings:', 'https://user:pw@example.com', 'not a url', 42, 'https://' + 'a'.repeat(2050)]) {
+      expect(isExternalUrl(url)).toBe(false);
+    }
+  });
+
   it('adds attachments to the last user message only', () => {
     const messages = [{ role: 'user' as const, content: 'First' }, { role: 'assistant' as const, content: 'Ok' }, { role: 'user' as const, content: 'Summarize' }];
     expect(withAttachments(messages, [])).toBe(messages);
@@ -57,16 +66,28 @@ describe('request helpers', () => {
 });
 
 describe('AttachmentStore', () => {
-  it('enforces unique names, count, and character limits', () => {
+  it('enforces count and character limits', () => {
     const store = new AttachmentStore();
-    expect(store.add('a.txt', 'x'.repeat(50_000))).toEqual({ name: 'a.txt', characters: 50_000 });
-    expect(() => store.add('a.txt', 'y')).toThrow('already attached');
-    expect(() => store.add('b.txt', 'y'.repeat(10_001))).toThrow('limit reached');
+    expect(store.add('a.txt', 'x'.repeat(50_000), '/docs/a.txt')).toEqual({ name: 'a.txt', characters: 50_000 });
+    expect(() => store.add('b.txt', 'y'.repeat(10_001), '/docs/b.txt')).toThrow('limit reached');
     store.remove('a.txt');
-    for (let index = 0; index < 10; index++) store.add(index + '.txt', 'z');
-    expect(() => store.add('extra.txt', 'z')).toThrow('limit reached');
+    for (let index = 0; index < 10; index++) store.add(index + '.txt', 'z', '/docs/' + index + '.txt');
+    expect(() => store.add('extra.txt', 'z', '/docs/extra.txt')).toThrow('limit reached');
     expect(store.size).toBe(10);
     store.clear();
     expect(store.list()).toEqual([]);
+  });
+
+  it('rejects the same file twice but numbers different files that share a name', () => {
+    const store = new AttachmentStore();
+    store.add('notes.txt', 'one', '/a/notes.txt');
+    expect(() => store.add('notes.txt', 'again', '/a/notes.txt')).toThrow('already attached');
+    expect(store.add('notes.txt', 'two', '/b/notes.txt').name).toBe('notes (2).txt');
+    expect(store.add('notes.txt', 'three', '/c/notes.txt').name).toBe('notes (3).txt');
+    store.remove('notes (2).txt');
+    expect(store.add('notes.txt', 'four', '/d/notes.txt').name).toBe('notes (2).txt');
+    expect(store.add('README', 'x', '/a/README').name).toBe('README');
+    expect(store.add('README', 'y', '/b/README').name).toBe('README (2)');
+    expect(store.list().map(item => item.name)).toEqual(['notes.txt', 'notes (3).txt', 'notes (2).txt', 'README', 'README (2)']);
   });
 });
