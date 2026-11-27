@@ -1,17 +1,19 @@
 import { open } from 'node:fs/promises';
-import { basename, dirname, extname, join, sep } from 'node:path';
+import { basename, extname } from 'node:path';
+import { limits } from './validation';
 
-export const maxContext = 60_000;
-const maxBytes = 20 * 1024 * 1024;
+/** Extracts text from PDF bytes. In the app this runs in an isolated utility process. */
+export type PdfReader = (bytes: Uint8Array) => Promise<string>;
 
-export async function extract(filePath: string): Promise<{ name: string; text: string }> {
+export async function extract(filePath: string, readPdf: PdfReader): Promise<{ name: string; text: string }> {
   const name = basename(filePath);
   const extension = extname(name).toLowerCase();
   if (extension !== '.pdf' && extension !== '.txt') throw new Error('Drop a PDF or TXT file.');
   const file = await open(filePath, 'r').catch(() => { throw new Error('Could not open that file.'); });
+  let bytes: Uint8Array;
   try {
     const info = await file.stat();
-    if (!info.isFile() || info.size > maxBytes) throw new Error('Choose a file under 20 MB.');
+    if (!info.isFile() || info.size > limits.fileBytes) throw new Error('Choose a file under 20 MB.');
     const data = new Uint8Array(info.size);
     let offset = 0;
     while (offset < data.length) {
@@ -19,14 +21,16 @@ export async function extract(filePath: string): Promise<{ name: string; text: s
       if (!bytesRead) break;
       offset += bytesRead;
     }
-    const bytes = data.subarray(0, offset);
-    const text = (extension === '.txt' ? decode(bytes) : await pdfText(bytes)).trim();
-    if (!text) throw new Error('No readable text found. Scanned PDFs need OCR before upload.');
-    if (text.length > maxContext) throw new Error('This document exceeds 60,000 characters. Try a shorter excerpt.');
-    return { name, text };
+    bytes = data.subarray(0, offset);
   } finally {
     await file.close();
   }
+  const text = (extension === '.txt' ? decode(bytes) : await readPdf(bytes)).trim();
+  if (!text) throw new Error('No readable text found. Scanned PDFs need OCR before upload.');
+  if (text.length > limits.attachmentCharacters) {
+    throw new Error('This document exceeds 60,000 characters. Try a shorter excerpt.');
+  }
+  return { name, text };
 }
 
 function decode(bytes: Uint8Array): string {
@@ -37,40 +41,4 @@ function decode(bytes: Uint8Array): string {
   } catch {
     throw new Error('Save the text file as UTF-8 and try again.');
   }
-}
-
-async function pdfText(data: Uint8Array): Promise<string> {
-  const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  const assets = dirname(require.resolve('pdfjs-dist/package.json'));
-  const assetUrl = (directory: string) => join(assets, directory).split(sep).join('/') + '/';
-  const task = getDocument({
-    data,
-    useSystemFonts: false,
-    standardFontDataUrl: assetUrl('standard_fonts'),
-    cMapUrl: assetUrl('cmaps'),
-    wasmUrl: assetUrl('wasm'),
-  });
-  const pages: string[] = [];
-  let total = 0;
-  try {
-    const pdf = await task.promise;
-    if (pdf.numPages > 300) throw new Error('This PDF exceeds 300 pages. Try a shorter excerpt.');
-    for (let index = 1; index <= pdf.numPages; index++) {
-      const page = await pdf.getPage(index);
-      const content = await page.getTextContent();
-      const text = content.items.map(item => 'str' in item ? item.str + (item.hasEOL ? '\n' : ' ') : '').join('').trim();
-      page.cleanup();
-      if (!text) continue;
-      const labeled = 'Page ' + index + '\n' + text;
-      pages.push(labeled);
-      total += labeled.length + 2;
-      if (total > maxContext + 2) break;
-    }
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('This PDF exceeds')) throw error;
-    throw new Error('Could not read this PDF. Check that it opens and is free of password protection.');
-  } finally {
-    await task.destroy();
-  }
-  return pages.join('\n\n');
 }

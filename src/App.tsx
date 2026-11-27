@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type DragEvent, type FormEvent, type PointerEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import { models, type Attachment, type Buddy, type Message, type Provider, type Settings } from '../shared/protocol';
+import { envKeyName, models, type Attachment, type Buddy, type Message, type Provider, type Settings } from '../shared/protocol';
 import './styles.css';
 
 declare global { interface Window { buddy: Buddy } }
@@ -269,15 +269,19 @@ function SettingsView({ initial, onSave }: { initial?: Settings; onSave: (settin
           onChange={event => setForm({ ...form, model: event.target.value })} /></label>
         {form.provider !== 'ollama' && <>
           <label>API key<input type="password" autoComplete="off" maxLength={2048} value={key}
-            placeholder={form.hasKey ? 'Key configured · enter to replace' : 'Enter an API key'}
+            placeholder={form.keySource === 'saved' ? 'Key saved · enter to replace'
+              : form.keySource === 'environment' ? 'Using environment key · enter to override' : 'Enter an API key'}
             onChange={event => { setKey(event.target.value); setClearKey(false); }} /></label>
-          {form.hasKey && <label className="check"><input type="checkbox" checked={clearKey} onChange={event => {
+          {form.keySource === 'saved' && <label className="check"><input type="checkbox" checked={clearKey} onChange={event => {
             setClearKey(event.target.checked);
             setKey('');
           }} /> Remove saved key</label>}
+          {form.keySource === 'environment' && <p className="hint">Using the key from the {envKeyName(form.provider)} environment variable. A key saved here takes precedence.</p>}
         </>}
-        <p className="hint">{form.provider === 'ollama' ? 'Uses Ollama on this computer at port 11434.' : 'Chat and attached text are sent to the selected provider when you send a message.'}</p>
-        <label>System prompt<textarea rows={5} maxLength={8000} value={form.systemPrompt}
+        <p className="hint">{form.provider === 'ollama'
+          ? 'Uses Ollama at 127.0.0.1:11434 by default. Set the OLLAMA_HOST environment variable to use another address.'
+          : 'Chat and attached text are sent to the selected provider when you send a message.'}</p>
+        <label>System prompt<textarea rows={5} maxLength={8000} value={form.systemPrompt} placeholder="Leave blank to use the default prompt."
           onChange={event => setForm({ ...form, systemPrompt: event.target.value })} /></label>
         <button className="primary">{working ? 'Working…' : 'Save settings'}</button>
       </fieldset>

@@ -1,10 +1,13 @@
-import { app, BrowserWindow, ipcMain, screen } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, screen } from 'electron';
 import { join } from 'node:path';
 import { loadEnvFile } from 'node:process';
-import { extract, maxContext } from './documents';
+import { AttachmentStore } from './attachments';
+import { extract } from './documents';
+import { readPdfInUtilityProcess } from './pdf-process';
 import { getKey, getSettings, isProvider, saveSettings } from './settings';
 import { streamReply } from './provider';
-import type { ChatResult, Message, SettingsUpdate } from '../shared/protocol';
+import { isRequestId, validateAttachmentPath, validateMessages, withAttachments } from './validation';
+import type { ChatResult, SettingsUpdate } from '../shared/protocol';
 
 const development = !app.isPackaged && process.argv.includes('--dev');
 if (development) {
@@ -21,9 +24,11 @@ let expanded = false;
 let anchor = { x: 0, y: 0 };
 let stream: AbortController | undefined;
 let dragging: { x: number; y: number; bounds: Electron.Rectangle } | undefined;
-const attachments = new Map<string, string>();
+const attachments = new AttachmentStore();
 let extracting = false;
 let saving = false;
+/** Incremented whenever the renderer starts over, so in-flight work for the old page is discarded. */
+let session = 0;
 
 function position(open: boolean) {
   if (!window) return;
@@ -39,6 +44,21 @@ function position(open: boolean) {
   }
 }
 
+/**
+ * The renderer keeps the visible attachment list and conversation in memory. When the page reloads
+ * or crashes, drop main-process state too so hidden documents are never sent to a provider.
+ */
+function resetSession() {
+  session++;
+  stream?.abort();
+  attachments.clear();
+  dragging = undefined;
+  if (window && !window.isDestroyed() && expanded) {
+    expanded = false;
+    position(false);
+  }
+}
+
 function createWindow() {
   const area = screen.getPrimaryDisplay().workArea;
   anchor = { x: area.x + area.width - 126, y: area.y + area.height - 126 };
@@ -50,9 +70,11 @@ function createWindow() {
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
+  window.webContents.on('did-start-loading', resetSession);
+  window.webContents.on('render-process-gone', resetSession);
   window.webContents.session.setPermissionRequestHandler((_contents, _permission, reply) => reply(false));
   window.once('ready-to-show', () => window?.show());
-  window.on('closed', () => { stream?.abort(); attachments.clear(); window = null; });
+  window.on('closed', () => { resetSession(); window = null; });
   if (development) void window.loadURL('http://127.0.0.1:5173');
   else void window.loadFile(join(__dirname, '../../dist/index.html'));
 }
@@ -61,14 +83,16 @@ function trusted(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) {
   return event.sender === window?.webContents && event.senderFrame === event.sender.mainFrame;
 }
 
-function handle<T extends unknown[], R>(channel: string, callback: (...args: T) => R) {
-  ipcMain.handle(channel, (event, ...args: T) => {
+/** Registers an IPC handler for the trusted main frame. Arguments are untrusted and must be validated. */
+function handle(channel: string, callback: (...args: unknown[]) => unknown) {
+  ipcMain.handle(channel, (event, ...args: unknown[]) => {
     if (!trusted(event)) throw new Error('Request denied.');
     return callback(...args);
   });
 }
 
-handle('buddy:expand', (open: boolean) => {
+handle('buddy:expand', open => {
+  if (typeof open !== 'boolean') throw new Error('Invalid request.');
   if (!window || expanded === open) return;
   if (!expanded) {
     const { x, y } = window.getBounds();
@@ -77,7 +101,7 @@ handle('buddy:expand', (open: boolean) => {
   expanded = open;
   position(open);
 });
-ipcMain.on('buddy:drag', (event, phase: string) => {
+ipcMain.on('buddy:drag', (event, phase: unknown) => {
   if (!trusted(event) || !window || expanded) return;
   if (phase === 'end') { dragging = undefined; return; }
   const cursor = screen.getCursorScreenPoint();
@@ -88,65 +112,67 @@ ipcMain.on('buddy:drag', (event, phase: string) => {
 });
 ipcMain.on('buddy:quit', event => { if (trusted(event)) app.quit(); });
 ipcMain.on('buddy:cancel', event => { if (trusted(event)) stream?.abort(); });
-handle('buddy:settings', (provider?: unknown) => getSettings(isProvider(provider) ? provider : undefined));
-handle('buddy:save', async (settings: SettingsUpdate) => {
+handle('buddy:settings', provider => getSettings(isProvider(provider) ? provider : undefined));
+handle('buddy:save', async settings => {
   if (saving) throw new Error('Settings are already being saved.');
   saving = true;
-  try { return await saveSettings(settings); } finally { saving = false; }
+  try { return await saveSettings(settings as SettingsUpdate); } finally { saving = false; }
 });
-handle('buddy:attach', async (path: string) => {
+handle('buddy:attach', async input => {
+  const path = validateAttachmentPath(input);
   if (extracting || stream) throw new Error('Wait for the current operation to finish.');
   extracting = true;
+  const started = session;
   try {
-    const { name, text } = await extract(path);
-    if (attachments.has(name)) throw new Error('A document with this name is already attached.');
-    const used = [...attachments.values()].reduce((total, item) => total + item.length, 0);
-    if (used + text.length > maxContext || attachments.size >= 10) {
-      throw new Error('Attachment limit reached. Remove a document before adding another.');
-    }
-    attachments.set(name, text);
-    return { name, characters: text.length };
+    const { name, text } = await extract(path, readPdfInUtilityProcess);
+    if (started !== session) throw new Error('The window reloaded. Attach the file again.');
+    return attachments.add(name, text);
   } finally { extracting = false; }
 });
-handle('buddy:remove', (name: string) => { attachments.delete(name); });
-handle('buddy:chat', async (id: string, messages: Message[]): Promise<ChatResult> => {
+handle('buddy:remove', name => {
+  if (typeof name !== 'string') throw new Error('Invalid request.');
+  attachments.remove(name);
+});
+handle('buddy:chat', async (id, input): Promise<ChatResult> => {
+  if (!isRequestId(id)) throw new Error('Invalid chat request.');
   if (stream || extracting) throw new Error('Wait for the current operation to finish.');
-  if (!Array.isArray(messages) || !messages.length || messages.length > 100 ||
-      messages.some(message => !message || !['user', 'assistant'].includes(message.role) || typeof message.content !== 'string') ||
-      messages.at(-1)?.role !== 'user' || messages.reduce((total, message) => total + message.content.length, 0) > 100_000) {
-    throw new Error('This conversation is too long. Start a new chat.');
-  }
+  const messages = validateMessages(input);
   const controller = new AbortController();
   stream = controller;
-  const timeout = AbortSignal.timeout(180_000);
   let reply = '';
   try {
     const settings = await getSettings();
     const key = await getKey(settings.provider);
-    const context = [...attachments].map(([name, text]) => ({ name, text }));
-    const request = [...messages];
-    if (context.length) {
-      request[request.length - 1] = {
-        role: 'user',
-        content: 'Attached source material (JSON):\n' + JSON.stringify(context) + '\n\nUser request:\n' + request.at(-1)!.content,
-      };
-    }
-    await streamReply(settings, key, request, AbortSignal.any([controller.signal, timeout]), text => {
-      reply += text;
-      if (window && !window.isDestroyed()) window.webContents.send('buddy:chunk', { id, text });
+    await streamReply(settings, key, withAttachments(messages, attachments.list()), {
+      signal: controller.signal,
+      onText: text => {
+        reply += text;
+        if (window && !window.isDestroyed()) window.webContents.send('buddy:chunk', { id, text });
+      },
     });
     return { text: reply };
   } catch (error) {
     if (controller.signal.aborted) return { text: reply };
-    if (timeout.aborted) return { text: reply, error: 'The model took too long to reply. Try again.' };
+    if (development) console.error('[buddy:chat]', error);
     return { text: reply, error: error instanceof Error ? error.message : 'Could not complete the request.' };
-  } finally { stream = undefined; }
+  } finally {
+    if (stream === controller) stream = undefined;
+  }
 });
 
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { window?.show(); window?.focus(); });
-  void app.whenReady().then(createWindow);
+  void app.whenReady().then(() => {
+    // Electron's default menu adds Reload and DevTools shortcuts. Keep them for development only;
+    // on macOS keep the app and edit menus so Quit and copy/paste shortcuts keep working.
+    if (!development) {
+      Menu.setApplicationMenu(process.platform === 'darwin'
+        ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }])
+        : null);
+    }
+    createWindow();
+  });
   app.on('activate', () => { if (!window) createWindow(); });
   app.on('window-all-closed', () => app.quit());
 }
