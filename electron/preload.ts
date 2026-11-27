@@ -1,0 +1,24 @@
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import type { Buddy, StreamEvent } from '../shared/protocol';
+
+const buddy: Buddy = {
+  expand: open => ipcRenderer.invoke('buddy:expand', open),
+  drag: phase => ipcRenderer.send('buddy:drag', phase),
+  quit: () => ipcRenderer.send('buddy:quit'),
+  settings: provider => ipcRenderer.invoke('buddy:settings', provider),
+  save: settings => ipcRenderer.invoke('buddy:save', settings),
+  attach: file => {
+    const path = webUtils.getPathForFile(file);
+    if (!path) return Promise.reject(new Error('Choose a file saved on this computer.'));
+    return ipcRenderer.invoke('buddy:attach', path);
+  },
+  remove: name => ipcRenderer.invoke('buddy:remove', name),
+  chat: (id, messages) => ipcRenderer.invoke('buddy:chat', id, messages),
+  cancel: () => ipcRenderer.send('buddy:cancel'),
+  onChunk: callback => {
+    const listener = (_event: Electron.IpcRendererEvent, chunk: StreamEvent) => callback(chunk);
+    ipcRenderer.on('buddy:chunk', listener);
+    return () => ipcRenderer.removeListener('buddy:chunk', listener);
+  },
+};
+contextBridge.exposeInMainWorld('buddy', buddy);
