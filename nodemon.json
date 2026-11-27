@@ -1,0 +1,6 @@
+{
+  "watch": ["dist-electron"],
+  "ext": "js",
+  "delay": 400,
+  "exec": "electron . --dev"
+}
