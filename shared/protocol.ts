@@ -52,7 +52,33 @@ export type Message = { role: 'assistant' | 'user'; content: string };
 export type Attachment = { name: string; characters: number; excerpted?: boolean };
 export type StreamEvent = { id: string; text: string };
 export type WebSource = { title: string; url: string };
-export type ChatResult = { text: string; error?: string; sources?: WebSource[]; trimmed?: number };
+export type ChatResult = { text: string; error?: string; sources?: WebSource[]; trimmed?: number; usage?: Usage };
+
+/** Token accounting reported by a provider for the last reply, when available. */
+export type Usage = {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+};
+
+/** A document name restored from a previous session (its text is not persisted, only the name). */
+export type HistoryAttachment = { name: string; characters: number; excerpted?: boolean };
+
+/** A single message restored from a previous session. */
+export type StoredMessage = {
+  id: string;
+  role: 'assistant' | 'user';
+  content: string;
+  sources?: WebSource[];
+};
+
+/** The serialized conversation saved between sessions. */
+export type History = {
+  version: 1;
+  savedAt: number;
+  messages: StoredMessage[];
+  attachments: HistoryAttachment[];
+};
 
 /**
  * Keeps the most recent messages that fit within the conversation message and character limits,
@@ -91,6 +117,16 @@ export interface Buddy {
   remove(name: string): Promise<void>;
   chat(id: string, messages: Message[], search?: boolean): Promise<ChatResult>;
   cancel(): void;
+  /** Loads the conversation saved from the previous session, if any. */
+  history(): Promise<History | null>;
+  /** Persists the current conversation so it survives quitting the app. */
+  saveHistory(history: History): Promise<void>;
+  /** Removes any saved conversation. */
+  clearHistory(): Promise<void>;
+  /** Returns the current OS text selection or clipboard contents for "ask about this" flows. */
+  clipboard(): Promise<string>;
   onChunk(callback: (chunk: StreamEvent) => void): () => void;
   onOpen?(callback: (open: boolean) => void): () => void;
+  /** Fired when the global shortcut or tray menu pushes selected/clipboard text into the composer. */
+  onSelection(callback: (text: string) => void): () => void;
 }

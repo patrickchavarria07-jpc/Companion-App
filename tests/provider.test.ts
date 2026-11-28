@@ -43,6 +43,20 @@ async function run(
   }
 }
 
+async function runUsage(
+  provider: Provider,
+  options: { signal?: AbortSignal; idleTimeoutMs?: number; maxOutputCharacters?: number } = {},
+): Promise<{ text: string; usage?: import('../shared/protocol').Usage }> {
+  let text = '';
+  const usage = await streamReply(settings(provider), key, messages, {
+    signal: options.signal ?? new AbortController().signal,
+    idleTimeoutMs: options.idleTimeoutMs,
+    maxOutputCharacters: options.maxOutputCharacters,
+    onText: chunk => { text += chunk; },
+  });
+  return { text, usage };
+}
+
 const openAiChunk = (content: string, finish: string | null = null) =>
   'data: ' + JSON.stringify({ choices: [{ delta: { content }, finish_reason: finish }] }) + '\n\n';
 
@@ -279,5 +293,49 @@ describe('streamReply', () => {
     }), { headers: { 'content-type': 'text/event-stream' } }));
     const result = await run('groq', { signal: controller.signal });
     expect(result).toMatchObject({ text: 'A', error: { message: 'stopped by user' } });
+  });
+});
+
+describe('usage reporting', () => {
+  it('reports OpenAI token usage from the final packet', async () => {
+    const payload = openAiChunk('Hello', 'stop') +
+      'data: ' + JSON.stringify({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }) + '\n\n';
+    mockFetch(streamOf([payload]));
+    expect(await runUsage('openrouter')).toEqual({
+      text: 'Hello',
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+    });
+  });
+
+  it('reports Gemini token usage from usageMetadata', async () => {
+    const packet = {
+      candidates: [{ content: { parts: [{ text: 'Answer' }] }, finishReason: 'STOP' }],
+      usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 3, totalTokenCount: 10 },
+    };
+    mockFetch(streamOf(['data: ' + JSON.stringify(packet) + '\n\n']));
+    expect(await runUsage('gemini')).toEqual({
+      text: 'Answer',
+      usage: { promptTokens: 7, completionTokens: 3, totalTokens: 10 },
+    });
+  });
+
+  it('reports Ollama prompt/eval counts and sums a total', async () => {
+    const line = (value: unknown) => JSON.stringify(value);
+    const chunks = [
+      line({ message: { content: 'Hi ' }, done: false }),
+      line({ message: { content: 'there' }, done: false }),
+      line({ message: { content: '' }, done: true, done_reason: 'stop', prompt_eval_count: 12, eval_count: 4 }),
+    ].join('\n');
+    mockFetch(streamOf([chunks], 'application/x-ndjson'));
+    expect(await runUsage('ollama')).toEqual({
+      text: 'Hi there',
+      usage: { promptTokens: 12, completionTokens: 4, totalTokens: 16 },
+    });
+  });
+
+  it('returns undefined usage when the provider reports none', async () => {
+    mockFetch(streamOf([openAiChunk('Hi', 'stop')]));
+    const { usage } = await runUsage('groq');
+    expect(usage).toBeUndefined();
   });
 });

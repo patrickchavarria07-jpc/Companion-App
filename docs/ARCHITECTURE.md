@@ -28,6 +28,7 @@ Research Buddy is an Electron app with three kinds of processes and one shared t
 | `electron/provider.ts`, `stream.ts` | Build provider requests, stream bounded SSE/NDJSON replies, unwrap array/object errors, map status codes, and enforce idle timeouts. |
 | `electron/web-search.ts` | Queries Tavily with bounded excerpts, contextualizing short follow-ups and condensing >400-char prompts. |
 | `electron/settings.ts` | Serialized atomic reads/writes of `settings.json` in userData, encrypting provider and Tavily API keys with `safeStorage` and surfacing recovery notices when corrupt files are reset. |
+| `electron/history.ts` | Serialized atomic read/parse/write of `history.json` in userData, restoring the last conversation on launch. Attachment *text* is intentionally not persisted (it stays in memory only, like the security model assumes); only message text and attachment names survive a restart. |
 | `electron/window-state.ts`, `icon.ts` | Computes clamped window/anchor bounds, persists widget position, and renders the RGBA PNG icon. |
 | `src/` | React UI. `main.tsx` is the entry, `App.tsx` the chat panel, `SettingsView.tsx` the settings form, `Markdown.tsx` memoized Markdown + inline citation linker. |
 | `shared/protocol.ts` | Types, supported extensions, conversation fitting, and constants shared across the IPC boundary. |
@@ -46,9 +47,14 @@ All handlers reject calls that don't come from the app window's main frame, and 
 | `buddy:save` | invoke | `SettingsUpdate` → `Settings` |
 | `buddy:attach` | invoke | absolute file path (from `webUtils.getPathForFile`) → `Attachment` |
 | `buddy:remove` | invoke | attachment name |
-| `buddy:chat` | invoke | `id, Message[], search?` → `ChatResult` (`{ text, error?, sources?, trimmed? }`) when the reply ends |
+| `buddy:chat` | invoke | `id, Message[], search?` → `ChatResult` (`{ text, error?, sources?, trimmed?, usage? }`) when the reply ends |
 | `buddy:cancel` | send | aborts the active reply stream or in-flight PDF extraction |
+| `buddy:history` | invoke | — → `History \| null`, the conversation saved from the previous session |
+| `buddy:saveHistory` | invoke | `History` → persists the current conversation to `history.json` in userData |
+| `buddy:clearHistory` | invoke | — removes any saved conversation |
+| `buddy:clipboard` | invoke | — → the OS text selection or clipboard contents, for "ask about this" flows |
 | `buddy:chunk` | main → renderer | `{ id, text }` for each streamed piece of the reply |
+| `buddy:selection` | main → renderer | `text` when the global shortcut or tray menu pushes selected/clipboard text into the composer |
 | `buddy:open` | main → renderer | `open: boolean` when the tray menu or global shortcut expands or collapses the window |
 
 ## Chat flow
