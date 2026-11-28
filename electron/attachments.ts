@@ -1,5 +1,11 @@
-import { extname } from 'node:path';
+import { extname, normalize } from 'node:path';
+import type { Attachment } from '../shared/protocol';
 import { limits } from './validation';
+
+const canonicalSource = (source: string) => {
+  const clean = normalize(source);
+  return process.platform === 'win32' || process.platform === 'darwin' ? clean.toLowerCase() : clean;
+};
 
 /** In-memory store for extracted attachment text, owned by the main process. */
 export class AttachmentStore {
@@ -15,14 +21,21 @@ export class AttachmentStore {
    * Adds a document. `source` identifies the file (its path) so the same file can't be attached twice;
    * different files that share a name get a numbered display name, e.g. `notes (2).txt`.
    */
-  add(name: string, text: string, source: string) {
-    if ([...this.items.values()].some(item => item.source === source)) throw new Error('This document is already attached.');
-    if (this.items.size >= limits.attachments || this.characters + text.length > limits.attachmentCharacters) {
+  add(name: string, text: string, source: string): Attachment {
+    const normalized = canonicalSource(source);
+    if ([...this.items.values()].some(item => item.source === normalized)) {
+      throw new Error('This document is already attached.');
+    }
+    if (this.items.size >= limits.attachments ||
+        text.length > limits.documentCharacters ||
+        this.characters + text.length > limits.totalAttachmentCharacters) {
       throw new Error('Attachment limit reached. Remove a document before adding another.');
     }
     const unique = this.uniqueName(name);
-    this.items.set(unique, { text, source });
-    return { name: unique, characters: text.length };
+    this.items.set(unique, { text, source: normalized });
+    return text.length > limits.attachmentCharacters
+      ? { name: unique, characters: text.length, excerpted: true }
+      : { name: unique, characters: text.length };
   }
 
   remove(name: string) { this.items.delete(name); }

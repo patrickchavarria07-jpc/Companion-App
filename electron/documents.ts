@@ -1,14 +1,20 @@
 import { open } from 'node:fs/promises';
-import { basename, extname } from 'node:path';
-import { limits } from './validation';
+import { basename } from 'node:path';
+import { isSupportedExtension, isTextExtension, limits } from './validation';
 
 /** Extracts text from PDF bytes. In the app this runs in an isolated utility process. */
 export type PdfReader = (bytes: Uint8Array) => Promise<string>;
 
-export async function extract(filePath: string, readPdf: PdfReader): Promise<{ name: string; text: string }> {
+export async function extract(
+  filePath: string,
+  readPdf: PdfReader,
+  signal?: AbortSignal,
+): Promise<{ name: string; text: string }> {
+  signal?.throwIfAborted();
   const name = basename(filePath);
-  const extension = extname(name).toLowerCase();
-  if (extension !== '.pdf' && extension !== '.txt') throw new Error('Drop a PDF or TXT file.');
+  if (!isSupportedExtension(name)) {
+    throw new Error('Drop a PDF or supported text file (.txt, .md, .csv, .json, .bib, .tex).');
+  }
   const file = await open(filePath, 'r').catch(() => { throw new Error('Could not open that file.'); });
   let bytes: Uint8Array;
   try {
@@ -17,6 +23,7 @@ export async function extract(filePath: string, readPdf: PdfReader): Promise<{ n
     const data = new Uint8Array(info.size);
     let offset = 0;
     while (offset < data.length) {
+      signal?.throwIfAborted();
       const { bytesRead } = await file.read(data, offset, data.length - offset, offset);
       if (!bytesRead) break;
       offset += bytesRead;
@@ -25,10 +32,12 @@ export async function extract(filePath: string, readPdf: PdfReader): Promise<{ n
   } finally {
     await file.close();
   }
-  const text = (extension === '.txt' ? decode(bytes) : await readPdf(bytes)).trim();
+  signal?.throwIfAborted();
+  const text = (isTextExtension(name) ? decode(bytes) : await readPdf(bytes)).trim();
+  signal?.throwIfAborted();
   if (!text) throw new Error('No readable text found. Scanned PDFs need OCR before upload.');
-  if (text.length > limits.attachmentCharacters) {
-    throw new Error('This document exceeds 60,000 characters. Try a shorter excerpt.');
+  if (text.length > limits.documentCharacters) {
+    throw new Error('This document exceeds 300,000 characters. Try a shorter excerpt.');
   }
   return { name, text };
 }

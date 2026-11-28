@@ -8,6 +8,7 @@
   --danger: #e0798f;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; overflow: hidden; }
 button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
@@ -51,12 +52,19 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .identity { flex: 1; min-width: 0; }
 .identity h1 { font-size: 15px; margin: 0 0 2px; }
 .identity span { display: block; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.icon, .primary, .secondary {
+.icon, .primary, .secondary, .danger-btn {
   border: 1px solid transparent; border-radius: 9px; color: inherit; background: transparent;
 }
 .icon { width: 32px; height: 32px; flex: none; padding: 0; font-size: 17px; }
 .icon:hover, .icon[aria-pressed=true] { background: #303d57; }
 .quit:hover { background: #733f55; }
+.confirm-bar, .active-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  padding: 8px 12px; border-bottom: 1px solid var(--edge); background: #261d2e; font-size: 12px; flex: none;
+}
+.active-banner { background: #1c2d37; }
+.confirm-actions { display: flex; align-items: center; gap: 8px; }
+.danger-btn { padding: 5px 10px; font-weight: 650; font-size: 11px; background: var(--danger); color: #1f0d14; }
 .conversation { flex: 1; min-height: 0; overflow: auto; padding: 16px; }
 .welcome { text-align: center; margin: 52px auto 20px; max-width: 280px; }
 .welcome h2, .settings h2 { margin: 14px 0 6px; font-size: 20px; letter-spacing: -.35px; }
@@ -67,6 +75,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .message.user { margin: 0 0 10px 22px; background: #253940; }
 .message strong { display: block; font-size: 11px; color: var(--accent); margin-bottom: 3px; }
+.message-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 3px; }
+.message-head strong { margin-bottom: 0; }
+.message-tools { display: flex; align-items: center; gap: 4px; opacity: .72; }
+.message:hover .message-tools, .message:focus-within .message-tools { opacity: 1; }
+.msg-action {
+  border: 0; border-radius: 5px; background: transparent; color: var(--muted);
+  font-size: 11px; padding: 1px 5px; line-height: 1.3;
+}
+.msg-action:hover:not(:disabled) { background: #303d57; color: #ecf0fb; }
 .message > .plain, .error { white-space: pre-wrap; }
 .markdown > :first-child { margin-top: 0; }
 .markdown > :last-child { margin-bottom: 0; }
@@ -102,6 +119,7 @@ textarea { resize: vertical; }
 .primary { color: #102720; background: var(--accent); }
 .secondary { border-color: #638b82; }
 .chat-actions { display: flex; align-items: center; gap: 10px; margin-top: 7px; }
+.chat-actions .spacer { flex: 1; }
 .search-provider { color: var(--muted); font-size: 11px; }
 .chat-actions .reset { margin-top: 0; }
 .attachments { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 5px; max-height: 82px; overflow: auto; }
@@ -109,9 +127,9 @@ textarea { resize: vertical; }
 .attachment span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attachment button, .reset { background: transparent; color: var(--muted); border: 0; }
 .reset { margin-top: 5px; font-size: 11px; padding: 2px 0; text-decoration: underline; }
-.settings { padding: 5px 16px 16px; overflow: auto; }
+.settings { flex: 1; min-height: 0; padding: 5px 16px 16px; overflow: auto; }
 .settings fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 10px; }
 .settings label { display: grid; gap: 4px; font-size: 12px; }
 .settings label.check { display: flex; align-items: center; }
 .settings .hint { margin: 0; }
-.settings .primary { justify-self: start; }
+.settings-actions { display: flex; align-items: center; gap: 8px; }

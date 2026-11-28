@@ -1,10 +1,23 @@
 import { createRequire } from 'node:module';
 import { dirname } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { pdfText } from '../electron/pdf';
+import { joinTextItems, pdfText } from '../electron/pdf';
 import { makePdf } from './helpers/pdf';
 
 const assetsDir = dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json'));
+
+describe('joinTextItems', () => {
+  it('joins mid-word kerned spans without inserting spaces and preserves word gaps', () => {
+    expect(joinTextItems([
+      { str: 'ef', width: 10, transform: [12, 0, 0, 12, 72, 720] },
+      { str: 'fi', width: 6, transform: [12, 0, 0, 12, 82.2, 720] },
+      { str: 'cient', width: 24, transform: [12, 0, 0, 12, 88.3, 720] },
+      { str: '', hasEOL: false },
+      { str: 'methods', width: 40, transform: [12, 0, 0, 12, 117, 720] },
+      { str: 'Next line', width: 45, transform: [12, 0, 0, 12, 72, 704] },
+    ])).toBe('efficient methods\nNext line');
+  });
+});
 
 describe('pdfText', () => {
   it('extracts page-labelled text and skips blank pages', async () => {

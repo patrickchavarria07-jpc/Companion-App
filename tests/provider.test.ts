@@ -25,12 +25,16 @@ function mockFetch(response: Response | ((init: RequestInit) => Response)) {
   return fetch;
 }
 
-async function run(provider: Provider, options: { signal?: AbortSignal; idleTimeoutMs?: number } = {}) {
+async function run(
+  provider: Provider,
+  options: { signal?: AbortSignal; idleTimeoutMs?: number; maxOutputCharacters?: number } = {},
+) {
   let text = '';
   try {
     await streamReply(settings(provider), key, messages, {
       signal: options.signal ?? new AbortController().signal,
       idleTimeoutMs: options.idleTimeoutMs,
+      maxOutputCharacters: options.maxOutputCharacters,
       onText: chunk => { text += chunk; },
     });
     return { text };
@@ -77,13 +81,18 @@ describe('buildRequest', () => {
     });
   });
 
-  it('uses the native Ollama API and raises num_ctx for large requests', () => {
+  it('uses the native Ollama API, prefers saved ollamaHost, and sizes num_ctx by UTF-8 bytes', () => {
     const small = buildRequest(settings('ollama'), '', messages, {});
     expect(small.url).toBe('http://127.0.0.1:11434/api/chat');
     expect(small.body).not.toHaveProperty('options');
+
     const large = buildRequest(settings('ollama'), '', [{ role: 'user', content: 'x'.repeat(60_000) }], { OLLAMA_HOST: 'gpu-box:9000' });
     expect(large.url).toBe('http://gpu-box:9000/api/chat');
     expect(large.body).toMatchObject({ options: { num_ctx: 32_768 } });
+
+    const withSavedHost = buildRequest({ ...settings('ollama'), ollamaHost: 'workstation:11435' }, '', [{ role: 'user', content: '漢'.repeat(25_000) }], { OLLAMA_HOST: 'gpu-box:9000' });
+    expect(withSavedHost.url).toBe('http://workstation:11435/api/chat');
+    expect(withSavedHost.body).toMatchObject({ options: { num_ctx: 32_768 } });
   });
 
   it('requires a key for hosted providers', () => {
@@ -98,7 +107,7 @@ describe('ollama helpers', () => {
     ['0.0.0.0', 'http://127.0.0.1:11434'],
     ['localhost:8080', 'http://localhost:8080'],
     ['http://example.com', 'http://example.com'],
-    ['https://example.com/ollama/', 'https://example.com/ollama'],
+    ['https://example.com/ollama/', 'http://example.com'.replace('http://', 'https://') + '/ollama'],
     ['[::1]:9000', 'http://[::1]:9000'],
   ])('resolves OLLAMA_HOST=%s', (value, expected) => {
     expect(ollamaBaseUrl(value)).toBe(expected);
@@ -146,6 +155,24 @@ describe('streamReply', () => {
     expect(await run('gemini')).toEqual({ text: 'Answer' });
   });
 
+  it('unwraps Gemini array-formatted HTTP error bodies and detects invalid API keys', async () => {
+    mockFetch(streamOf([JSON.stringify([{
+      error: { code: 400, message: 'API key not valid. Please pass a valid API key.', status: 'INVALID_ARGUMENT' },
+    }])], 'application/json', 400));
+    const { error } = await run('gemini');
+    expect(error?.message).toBe(
+      'The provider rejected access. Check your API key and model permissions in Settings.\nProvider message: API key not valid. Please pass a valid API key.',
+    );
+  });
+
+  it('accepts array-wrapped non-streaming JSON replies from Gemini', async () => {
+    mockFetch(streamOf([JSON.stringify([
+      { candidates: [{ content: { parts: [{ text: 'First ' }] } }] },
+      { candidates: [{ content: { parts: [{ text: 'second' }] }, finishReason: 'STOP' }] },
+    ])], 'application/json'));
+    expect(await run('gemini')).toEqual({ text: 'First second' });
+  });
+
   it('streams Ollama NDJSON', async () => {
     mockFetch(streamOf([
       '{"message":{"content":"Hi "}, "done": false}\n{"message":{"con',
@@ -177,9 +204,19 @@ describe('streamReply', () => {
     expect(result.error?.message).toMatch(/^Rate limit reached/);
   });
 
-  it('flags replies cut off by the output limit', async () => {
+  it('flags replies cut off by the output limit, including during reasoning before visible text', async () => {
     mockFetch(streamOf([openAiChunk('Partial', 'length'), 'data: [DONE]\n\n']));
     expect((await run('groq')).error?.message).toMatch(/output limit/);
+
+    mockFetch(streamOf([openAiChunk('', 'length'), 'data: [DONE]\n\n']));
+    expect((await run('groq')).error?.message).toMatch(/output limit/);
+  });
+
+  it('caps runaway replies at maxOutputCharacters while keeping partial text', async () => {
+    mockFetch(streamOf([openAiChunk('abcdefghij'), openAiChunk('klmnop', 'stop'), 'data: [DONE]\n\n']));
+    const result = await run('groq', { maxOutputCharacters: 12 });
+    expect(result.text).toBe('abcdefghijkl');
+    expect(result.error?.message).toMatch(/maximum length limit/);
   });
 
   it('flags Gemini safety blocks', async () => {

@@ -12,6 +12,11 @@ describe('createSseParser', () => {
     parser.end();
     expect(events).toEqual(['{"a":1}', 'line one\nline two', '[DONE]']);
   });
+
+  it('rejects unbounded streams without event delimiters', () => {
+    const parser = createSseParser(() => {}, 50);
+    expect(() => parser.push('data: ' + 'x'.repeat(120))).toThrow(RangeError);
+  });
 });
 
 describe('createNdjsonParser', () => {
@@ -24,5 +29,10 @@ describe('createNdjsonParser', () => {
     parser.push('{"c":3}');
     parser.end();
     expect(lines).toEqual(['{"a":1}', '{"b":2}', '{"c":3}']);
+  });
+
+  it('rejects unbounded lines exceeding maxBuffer', () => {
+    const parser = createNdjsonParser(() => {}, 40);
+    expect(() => parser.push('x'.repeat(100))).toThrow(RangeError);
   });
 });

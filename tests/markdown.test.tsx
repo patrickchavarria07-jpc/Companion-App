@@ -1,8 +1,9 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
+import type { WebSource } from '../shared/protocol';
 import { Markdown } from '../src/Markdown';
 
-const render = (text: string) => renderToStaticMarkup(<Markdown text={text} />);
+const render = (text: string, sources?: WebSource[]) => renderToStaticMarkup(<Markdown text={text} sources={sources} />);
 
 describe('Markdown', () => {
   it('renders common Markdown and GitHub tables', () => {
@@ -31,5 +32,17 @@ describe('Markdown', () => {
     const html = render('![chart](https://example.com/chart.png)');
     expect(html).not.toContain('<img');
     expect(html).toContain('<a href="https://example.com/chart.png" target="_blank" rel="noreferrer noopener" title="https://example.com/chart.png">chart</a>');
+  });
+
+  it('turns numbered citations into source links without touching code or out-of-range indices', () => {
+    const sources: WebSource[] = [
+      { title: 'First Study', url: 'https://example.com/1' },
+      { title: 'Second Study', url: 'https://example.com/2' },
+    ];
+    const html = render('Verified in trials [1] and [1, 2], not `arr[1]` or [9].', sources);
+    expect(html).toContain('<a href="https://example.com/1" target="_blank" rel="noreferrer noopener" title="First Study (https://example.com/1)">[1]</a>');
+    expect(html).toContain('<a href="https://example.com/2" target="_blank" rel="noreferrer noopener" title="Second Study (https://example.com/2)">[2]</a>');
+    expect(html).toContain('<code>arr[1]</code>');
+    expect(html).toContain('[9].');
   });
 });
