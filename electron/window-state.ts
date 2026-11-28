@@ -13,6 +13,27 @@ export function clampToArea(point: Point, size: Size, area: Area): Point {
   };
 }
 
+/** Computes clamped bounds for either the collapsed widget or expanded panel from the widget anchor. */
+export function computeWindowBounds(
+  anchor: Point,
+  compact: Size,
+  panel: Size,
+  open: boolean,
+  workArea: Area,
+): Area {
+  const width = open ? Math.min(panel.width, workArea.width) : compact.width;
+  const height = open ? Math.min(panel.height, workArea.height) : compact.height;
+  const target = open ? { x: anchor.x + compact.width - width, y: anchor.y + compact.height - height } : anchor;
+  return { ...clampToArea(target, { width, height }, workArea), width, height };
+}
+
+/** Derives the collapsed-widget anchor from the current window bounds. */
+export function anchorFromBounds(bounds: Area, compact: Size, expanded: boolean): Point {
+  return expanded
+    ? { x: bounds.x + bounds.width - compact.width, y: bounds.y + bounds.height - compact.height }
+    : { x: bounds.x, y: bounds.y };
+}
+
 /** Persists the widget position between launches. Writes are serialized and failures are ignored. */
 export function createPositionStore(file: string) {
   let queue: Promise<void> = Promise.resolve();

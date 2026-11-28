@@ -1,15 +1,61 @@
-import type { WebSource } from '../shared/protocol';
+import type { Message, WebSource } from '../shared/protocol';
 import { isExternalUrl, isRecord } from './validation';
 
-type SearchResult = WebSource & { excerpt: string };
+export type SearchResult = WebSource & { excerpt: string };
 const maxResults = 5;
-const maxQueryLength = 400;
+export const maxSearchQueryLength = 400;
 
-export async function searchWeb(query: string, signal: AbortSignal): Promise<SearchResult[]> {
-  const key = process.env.TAVILY_API_KEY?.trim();
-  if (!key) throw new Error('Set TAVILY_API_KEY and restart Research Buddy to use web search. See the README for setup.');
+const followUpPattern = /^(and|also|what about|how about|or|why|when|where|who)\b|\b(it|its|they|them|their|that|those|this|these|same|above|earlier|previous)\b/i;
+
+function clipWords(text: string, limit: number): string {
+  if (text.length <= limit) return text;
+  const sliced = text.slice(0, limit);
+  const boundary = sliced.lastIndexOf(' ');
+  return (boundary > limit * 0.6 ? sliced.slice(0, boundary) : sliced).trim();
+}
+
+/**
+ * Builds a concise `<= 400`-character Tavily query from the conversation:
+ * - enriches short follow-up questions with the prior user topic;
+ * - condenses long (>400 char) pasted passages while keeping any trailing question intact.
+ */
+export function buildSearchQuery(messages: Message[]): string {
+  const raw = messages.at(-1)?.content.trim().replace(/\s+/g, ' ') ?? '';
+  if (!raw) throw new Error('Enter a question before searching the web.');
+
+  if (raw.length > maxSearchQueryLength) {
+    const questionMatch = /([^.?!]{10,220}\?)\s*$/.exec(raw);
+    if (questionMatch) {
+      const question = questionMatch[1].trim();
+      const headBudget = maxSearchQueryLength - question.length - 3;
+      if (headBudget >= 40) return `${clipWords(raw.slice(0, raw.length - question.length).trim(), headBudget)} — ${question}`;
+    }
+    return clipWords(raw, maxSearchQueryLength);
+  }
+
+  if (messages.length > 1 && raw.length < 320 && followUpPattern.test(raw)) {
+    const priorUsers = messages.slice(0, -1).filter(message => message.role === 'user');
+    const prior = priorUsers.at(-1)?.content.trim().replace(/\s+/g, ' ');
+    const topicBudget = Math.min(140, maxSearchQueryLength - raw.length - 3);
+    if (prior && topicBudget >= 20) {
+      return `${clipWords(prior, topicBudget)} — ${raw}`;
+    }
+  }
+
+  return raw;
+}
+
+export async function searchWeb(query: string, signal: AbortSignal, apiKey?: string): Promise<SearchResult[]> {
+  const key = (apiKey ?? process.env.TAVILY_API_KEY)?.trim();
+  if (!key) {
+    throw new Error('Add a Tavily API key in Settings (or set TAVILY_API_KEY) to use web search.');
+  }
   if (!/^[!-~]+$/.test(key)) throw new Error('TAVILY_API_KEY contains invalid characters.');
-  if (query.length > maxQueryLength) throw new Error('Keep your web search question to 400 characters or fewer.');
+  const trimmed = query.trim();
+  if (!trimmed) throw new Error('Enter a question before searching the web.');
+  if (trimmed.length > maxSearchQueryLength) {
+    throw new Error('Keep your web search question to 400 characters or fewer.');
+  }
 
   const timeout = AbortSignal.timeout(12_000);
   let data: unknown;
@@ -17,14 +63,22 @@ export async function searchWeb(query: string, signal: AbortSignal): Promise<Sea
     const response = await fetch('https://api.tavily.com/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-      body: JSON.stringify({ query, search_depth: 'basic', max_results: maxResults, auto_parameters: false, include_published_date: true }),
+      body: JSON.stringify({
+        query: trimmed,
+        search_depth: 'basic',
+        max_results: maxResults,
+        auto_parameters: false,
+        include_published_date: true,
+      }),
       signal: AbortSignal.any([signal, timeout]),
       redirect: 'error',
     });
     if (!response.ok) {
       await response.body?.cancel();
-      if (response.status === 401 || response.status === 403) throw new Error('Tavily rejected access. Check your search API key.');
-      if (response.status === 429 || response.status === 432) throw new Error('Tavily search limit reached. Check your search quota or try again later.');
+      if (response.status === 401 || response.status === 403) throw new Error('Tavily rejected access. Check your search API key in Settings.');
+      if (response.status === 429 || response.status === 432 || response.status === 433) {
+        throw new Error('Tavily search limit reached. Check your search quota or try again later.');
+      }
       throw new Error('Tavily search failed (HTTP ' + response.status + '). Try again.');
     }
     data = await response.json();

@@ -4,6 +4,7 @@ import type { Buddy, StreamEvent } from '../shared/protocol';
 const buddy: Buddy = {
   expand: open => ipcRenderer.invoke('buddy:expand', open),
   drag: phase => ipcRenderer.send('buddy:drag', phase),
+  hide: () => ipcRenderer.send('buddy:hide'),
   quit: () => ipcRenderer.send('buddy:quit'),
   settings: provider => ipcRenderer.invoke('buddy:settings', provider),
   save: settings => ipcRenderer.invoke('buddy:save', settings),
@@ -19,6 +20,11 @@ const buddy: Buddy = {
     const listener = (_event: Electron.IpcRendererEvent, chunk: StreamEvent) => callback(chunk);
     ipcRenderer.on('buddy:chunk', listener);
     return () => ipcRenderer.removeListener('buddy:chunk', listener);
+  },
+  onOpen: callback => {
+    const listener = (_event: Electron.IpcRendererEvent, open: boolean) => callback(open);
+    ipcRenderer.on('buddy:open', listener);
+    return () => ipcRenderer.removeListener('buddy:open', listener);
   },
 };
 contextBridge.exposeInMainWorld('buddy', buddy);

@@ -53,3 +53,21 @@ jobs:
       - run: npm run build
       - name: Package unpacked app
         run: npx electron-builder --dir --publish never
+      - name: Verify packaged ASAR and unpacked pdf.js assets
+        run: |
+          node -e "
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const found = [];
+            (function walk(dir) {
+              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                const full = path.join(dir, entry.name);
+                if (entry.isDirectory()) walk(full);
+                else found.push(full);
+              }
+            })('release');
+            if (!found.some(f => f.endsWith('app.asar'))) throw new Error('Missing app.asar');
+            if (!found.some(f => f.includes('app.asar.unpacked') && f.endsWith('.bcmap'))) {
+              throw new Error('Missing unpacked pdfjs-dist .bcmap assets');
+            }
+          "

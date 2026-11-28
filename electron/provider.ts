@@ -1,5 +1,6 @@
 import type { Message, Settings } from '../shared/protocol';
 import { createNdjsonParser, createSseParser } from './stream';
+import { isRecord, limits } from './validation';
 
 const endpoints = {
   groq: 'https://api.groq.com/openai/v1/chat/completions',
@@ -8,6 +9,7 @@ const endpoints = {
 export const defaultOllamaUrl = 'http://127.0.0.1:11434';
 /** How long to wait for the first byte, and between later chunks, before giving up. */
 export const defaultIdleTimeoutMs = 120_000;
+const maxErrorBytes = 64 * 1024;
 
 type Format = 'gemini' | 'openai' | 'ollama';
 type ErrorBody = { code?: number | string; message?: string; status?: string } | string;
@@ -21,8 +23,14 @@ type Packet = {
   done_reason?: string;
 };
 
+export type ProviderSettings = Pick<Settings, 'provider' | 'model' | 'systemPrompt'> & { ollamaHost?: string };
 export type ProviderRequest = { format: Format; url: string; headers: Record<string, string>; body: unknown };
-export type StreamOptions = { signal: AbortSignal; onText: (text: string) => void; idleTimeoutMs?: number };
+export type StreamOptions = {
+  signal: AbortSignal;
+  onText: (text: string) => void;
+  idleTimeoutMs?: number;
+  maxOutputCharacters?: number;
+};
 export class ProviderTimeoutError extends Error {}
 
 /** Resolves the Ollama base URL from an `OLLAMA_HOST`-style value, following Ollama's own defaults. */
@@ -45,11 +53,10 @@ export function ollamaBaseUrl(value?: string): string {
 
 /**
  * Ollama silently truncates prompts that exceed its context window, which would drop attached
- * documents. Returns a `num_ctx` large enough for the request, or undefined if the default suffices.
+ * documents. `utf8Bytes` estimates token load (~3 UTF-8 bytes/token across Latin and CJK scripts).
  */
-export function ollamaContextSize(characters: number): number | undefined {
-  // Roughly 3 characters per token (conservative), plus room for the reply.
-  const needed = Math.ceil(characters / 3) + 2048;
+export function ollamaContextSize(utf8Bytes: number): number | undefined {
+  const needed = Math.ceil(utf8Bytes / 3) + 2048;
   if (needed <= 4096) return undefined;
   let size = 8192;
   while (size < needed && size < 65_536) size *= 2;
@@ -57,10 +64,10 @@ export function ollamaContextSize(characters: number): number | undefined {
 }
 
 export function buildRequest(
-  settings: Pick<Settings, 'provider' | 'model' | 'systemPrompt'>, key: string, messages: Message[],
+  settings: ProviderSettings, key: string, messages: Message[],
   env: Record<string, string | undefined> = process.env,
 ): ProviderRequest {
-  const { provider, model, systemPrompt } = settings;
+  const { provider, model, systemPrompt, ollamaHost } = settings;
   if (provider !== 'ollama' && !key) throw new Error('Add an API key in Settings before sending a message.');
   const withSystem = systemPrompt ? [{ role: 'system', content: systemPrompt }, ...messages] : messages;
   if (provider === 'gemini') {
@@ -82,11 +89,12 @@ export function buildRequest(
     };
   }
   if (provider === 'ollama') {
-    const characters = [systemPrompt, ...messages.map(message => message.content)].reduce((total, text) => total + text.length, 0);
-    const numCtx = ollamaContextSize(characters);
+    const bytes = [systemPrompt, ...messages.map(message => message.content)]
+      .reduce((total, text) => total + Buffer.byteLength(text, 'utf8'), 0);
+    const numCtx = ollamaContextSize(bytes);
     return {
       format: 'ollama',
-      url: ollamaBaseUrl(env.OLLAMA_HOST) + '/api/chat',
+      url: ollamaBaseUrl(ollamaHost?.trim() || env.OLLAMA_HOST) + '/api/chat',
       headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
       body: { model, stream: true, messages: withSystem, ...(numCtx ? { options: { num_ctx: numCtx } } : {}) },
     };
@@ -139,15 +147,29 @@ class Reply {
   received = false;
   finished = false;
   stopReason: string | undefined;
+  private characters = 0;
 
-  constructor(private readonly format: Format, private readonly onText: (text: string) => void, private readonly key: string) {}
+  constructor(
+    private readonly format: Format,
+    private readonly onText: (text: string) => void,
+    private readonly key: string,
+    private readonly maxCharacters: number,
+  ) {}
 
   consume(payload: string) {
     if (payload.trim() === '[DONE]') {
       this.finished = true;
       return;
     }
-    const packet = JSON.parse(payload) as Packet;
+    const parsed: unknown = JSON.parse(payload);
+    const packets = Array.isArray(parsed) ? parsed : [parsed];
+    for (const entry of packets) {
+      if (!isRecord(entry)) continue;
+      this.consumePacket(entry as Packet);
+    }
+  }
+
+  private consumePacket(packet: Packet) {
     if (packet.error) throw providerError(errorCode(packet.error), errorMessage(packet.error), this.key);
     let text: string | null | undefined;
     let reason: string | null | undefined;
@@ -171,7 +193,17 @@ class Reply {
       this.stopReason = reason;
     }
     if (text) {
+      if (this.characters + text.length > this.maxCharacters) {
+        const remaining = Math.max(0, this.maxCharacters - this.characters);
+        if (remaining > 0) {
+          this.received = true;
+          this.characters += remaining;
+          this.onText(text.slice(0, remaining));
+        }
+        throw new Error('The reply exceeded the maximum length limit. The partial response is shown above.');
+      }
       this.received = true;
+      this.characters += text.length;
       this.onText(text);
     }
   }
@@ -180,6 +212,7 @@ class Reply {
     const problem = stopProblem(this.stopReason);
     if (!this.received) {
       if (problem === 'blocked') throw new Error('The provider blocked this reply (' + this.stopReason + '). Try rephrasing your request.');
+      if (problem === 'truncated') throw new Error('The reply reached the model\'s output limit before finishing its response. Try a shorter question or another model.');
       throw new Error('The model returned no text. Try rephrasing your request or choosing another model.');
     }
     if (problem === 'truncated') throw new Error('The reply reached the model\'s output limit and may be incomplete.');
@@ -188,20 +221,47 @@ class Reply {
   }
 }
 
+async function readBoundedText(response: Response, limit: number): Promise<string> {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let out = '';
+  let bytes = 0;
+  try {
+    while (bytes < limit) {
+      const { value, done } = await reader.read();
+      if (done || !value) break;
+      const slice = value.byteLength > limit - bytes ? value.subarray(0, limit - bytes) : value;
+      out += decoder.decode(slice, { stream: true });
+      bytes += slice.byteLength;
+    }
+    out += decoder.decode();
+  } catch {
+    return out;
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return out;
+}
+
 async function readErrorBody(response: Response, key: string): Promise<Error> {
-  const text = await response.text().catch(() => '');
-  let packet: Packet | undefined;
-  try { packet = JSON.parse(text) as Packet; } catch { packet = undefined; }
+  const text = await readBoundedText(response, maxErrorBytes);
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { parsed = undefined; }
+  const root = Array.isArray(parsed) ? parsed[0] : parsed;
+  const packet = isRecord(root) ? root as Packet : undefined;
   const message = errorMessage(packet?.error)
     || (typeof packet?.message === 'string' ? packet.message : '')
-    || (!packet && !text.trimStart().startsWith('<') ? text : '');
+    || (parsed === undefined && !text.trimStart().startsWith('<') ? text : '');
   return providerError(response.status, message, key);
 }
 
 export async function streamReply(
-  settings: Pick<Settings, 'provider' | 'model' | 'systemPrompt'>, key: string, messages: Message[], options: StreamOptions,
+  settings: ProviderSettings, key: string, messages: Message[], options: StreamOptions,
 ) {
-  const { signal, onText, idleTimeoutMs = defaultIdleTimeoutMs } = options;
+  const {
+    signal, onText, idleTimeoutMs = defaultIdleTimeoutMs, maxOutputCharacters = limits.streamCharacters,
+  } = options;
   const request = buildRequest(settings, key, messages);
   const idle = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -231,13 +291,19 @@ export async function streamReply(
     if (!response.ok) throw await readErrorBody(response, key);
     if (!response.body) throw new Error('The provider returned an empty response.');
 
-    const reply = new Reply(request.format, onText, key);
+    const reply = new Reply(request.format, onText, key, maxOutputCharacters);
     const contentType = response.headers.get('content-type') ?? '';
     const mode = request.format === 'ollama' ? 'ndjson' : contentType.includes('text/event-stream') ? 'sse' : 'json';
     let whole = '';
     const parser = mode === 'sse' ? createSseParser(data => reply.consume(data))
       : mode === 'ndjson' ? createNdjsonParser(line => reply.consume(line))
-        : { push: (text: string) => { whole += text; }, end: () => reply.consume(whole) };
+        : {
+          push: (text: string) => {
+            if (whole.length + text.length > maxOutputCharacters * 2) throw new RangeError('Stream buffer limit exceeded.');
+            whole += text;
+          },
+          end: () => reply.consume(whole),
+        };
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     try {
@@ -252,7 +318,12 @@ export async function streamReply(
     } catch (error) {
       const interrupted = interruption();
       if (interrupted) throw interrupted;
-      if (error instanceof SyntaxError || error instanceof TypeError) throw new Error('The response was interrupted or unreadable. Try again.', { cause: error });
+      if (error instanceof RangeError) {
+        throw new Error('The response exceeded the maximum size limit.', { cause: error });
+      }
+      if (error instanceof SyntaxError || error instanceof TypeError) {
+        throw new Error('The response was interrupted or unreadable. Try again.', { cause: error });
+      }
       throw error;
     } finally {
       await reader.cancel().catch(() => {});
