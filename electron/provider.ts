@@ -1,4 +1,4 @@
-import type { Message, Settings } from '../shared/protocol';
+import type { Message, Settings, Usage } from '../shared/protocol';
 import { createNdjsonParser, createSseParser } from './stream';
 import { isRecord, limits } from './validation';
 
@@ -11,6 +11,10 @@ export const defaultOllamaUrl = 'http://127.0.0.1:11434';
 export const defaultIdleTimeoutMs = 120_000;
 const maxErrorBytes = 64 * 1024;
 
+/** Coerces an unknown value into a finite number, or undefined when it isn't one. */
+const toCount = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
 type Format = 'gemini' | 'openai' | 'ollama';
 type ErrorBody = { code?: number | string; message?: string; status?: string } | string;
 type Packet = {
@@ -19,6 +23,10 @@ type Packet = {
   choices?: { delta?: { content?: string | null }; message?: { content?: string | null }; finish_reason?: string | null }[];
   candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] }; finishReason?: string }[];
   promptFeedback?: { blockReason?: string };
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number };
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  prompt_eval_count?: number;
+  eval_count?: number;
   done?: boolean;
   done_reason?: string;
 };
@@ -147,6 +155,8 @@ class Reply {
   received = false;
   finished = false;
   stopReason: string | undefined;
+  /** Token accounting collected from provider-specific usage fields, when the provider reports any. */
+  usage: Usage = {};
   private characters = 0;
 
   constructor(
@@ -167,6 +177,7 @@ class Reply {
       if (!isRecord(entry)) continue;
       this.consumePacket(entry as Packet);
     }
+    this.summarizeUsage();
   }
 
   private consumePacket(packet: Packet) {
@@ -179,14 +190,36 @@ class Reply {
       const candidate = packet.candidates?.[0];
       text = candidate?.content?.parts?.filter(part => !part.thought).map(part => part.text ?? '').join('');
       reason = candidate?.finishReason;
+      const meta = isRecord(packet.usageMetadata) ? packet.usageMetadata : undefined;
+      if (meta) {
+        const prompt = toCount(meta.promptTokenCount);
+        const completion = toCount(meta.candidatesTokenCount);
+        const total = toCount(meta.totalTokenCount);
+        if (prompt !== undefined) this.usage.promptTokens = prompt;
+        if (completion !== undefined) this.usage.completionTokens = completion;
+        if (total !== undefined) this.usage.totalTokens = total;
+      }
     } else if (this.format === 'ollama') {
       text = typeof packet.message === 'object' ? packet.message.content : undefined;
       if (packet.done) reason = packet.done_reason || 'stop';
+      const prompt = toCount(packet.prompt_eval_count);
+      const completion = toCount(packet.eval_count);
+      if (prompt !== undefined) this.usage.promptTokens = prompt;
+      if (completion !== undefined) this.usage.completionTokens = completion;
     } else {
       const choice = packet.choices?.[0];
       if (choice?.finish_reason === 'error') throw providerError(undefined, '', this.key);
       text = choice?.delta?.content ?? choice?.message?.content;
       reason = choice?.finish_reason;
+      const usage = isRecord(packet.usage) ? packet.usage : undefined;
+      if (usage) {
+        const prompt = toCount(usage.prompt_tokens);
+        const completion = toCount(usage.completion_tokens);
+        const total = toCount(usage.total_tokens);
+        if (prompt !== undefined) this.usage.promptTokens = prompt;
+        if (completion !== undefined) this.usage.completionTokens = completion;
+        if (total !== undefined) this.usage.totalTokens = total;
+      }
     }
     if (reason) {
       this.finished = true;
@@ -218,6 +251,14 @@ class Reply {
     if (problem === 'truncated') throw new Error('The reply reached the model\'s output limit and may be incomplete.');
     if (problem === 'blocked') throw new Error('The provider stopped this reply early (' + this.stopReason + '). The partial response is shown above.');
     if (streaming && !this.finished) throw new Error('The stream ended early. The partial response is shown above.');
+  }
+
+  /** Fills in a total when a provider reports prompt/completion counts but not a total. */
+  private summarizeUsage() {
+    if (this.usage.totalTokens === undefined &&
+        this.usage.promptTokens !== undefined && this.usage.completionTokens !== undefined) {
+      this.usage.totalTokens = this.usage.promptTokens + this.usage.completionTokens;
+    }
   }
 }
 
@@ -258,7 +299,7 @@ async function readErrorBody(response: Response, key: string): Promise<Error> {
 
 export async function streamReply(
   settings: ProviderSettings, key: string, messages: Message[], options: StreamOptions,
-) {
+): Promise<Usage | undefined> {
   const {
     signal, onText, idleTimeoutMs = defaultIdleTimeoutMs, maxOutputCharacters = limits.streamCharacters,
   } = options;
@@ -329,6 +370,7 @@ export async function streamReply(
       await reader.cancel().catch(() => {});
     }
     reply.end(mode !== 'json');
+    return Object.keys(reply.usage).length ? reply.usage : undefined;
   } finally {
     clearTimeout(timer);
   }

@@ -1,5 +1,5 @@
 import {
-  app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, screen, shell, Tray,
+  app, BrowserWindow, clipboard, globalShortcut, ipcMain, Menu, nativeImage, screen, shell, Tray,
 } from 'electron';
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -11,9 +11,10 @@ import { renderBotPng } from './icon';
 import { readPdfInUtilityProcess } from './pdf-process';
 import { streamReply } from './provider';
 import { getKey, getSearchKey, getSettings, isProvider, saveSettings } from './settings';
+import { clearHistory, loadHistory, saveHistory } from './history';
 import { isExternalUrl, isRequestId, validateAttachmentPath } from './validation';
 import { anchorFromBounds, clampToArea, computeWindowBounds, createPositionStore } from './window-state';
-import type { ChatResult, SettingsUpdate } from '../shared/protocol';
+import type { ChatResult, History, SettingsUpdate } from '../shared/protocol';
 
 const development = !app.isPackaged && process.argv.includes('--dev');
 if (development) {
@@ -29,6 +30,7 @@ if (process.platform === 'linux') app.commandLine.appendSwitch('ozone-platform',
 const compact = { width: 104, height: 104 };
 const panelSize = { width: 460, height: 650 };
 const summonShortcut = 'CommandOrControl+Shift+Space';
+const selectionShortcut = 'CommandOrControl+Shift+C';
 
 let window: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -90,6 +92,11 @@ function updateTrayMenu() {
       label: 'Open Research Buddy',
       accelerator: summonShortcut,
       click: () => summonWindow(true),
+    },
+    {
+      label: 'Ask about clipboard',
+      accelerator: selectionShortcut,
+      click: () => askSelection(),
     },
     {
       label: visible ? 'Hide Widget' : 'Show Widget',
@@ -210,6 +217,23 @@ function trusted(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent) {
   return event.sender === window?.webContents && event.senderFrame === event.sender.mainFrame;
 }
 
+/**
+ * Reads the OS text selection (X11 primary selection) or clipboard and pushes it into the composer,
+ * then summons the window. This is the floating widget's reason to exist: ask about whatever you
+ * just selected anywhere on the desktop.
+ */
+function askSelection() {
+  if (!window || window.isDestroyed()) {
+    ensureWindow();
+    return;
+  }
+  const text = clipboard.readText('selection') || clipboard.readText();
+  if (!text.trim()) return;
+  if (!window.isVisible()) window.show();
+  window.webContents.send('buddy:selection', text);
+  summonWindow(true);
+}
+
 /** Registers an IPC handler for the trusted main frame. Arguments are untrusted and must be validated. */
 function handle(channel: string, callback: (...args: unknown[]) => unknown) {
   ipcMain.handle(channel, (event, ...args: unknown[]) => {
@@ -222,6 +246,10 @@ handle('buddy:expand', open => {
   if (typeof open !== 'boolean') throw new Error('Invalid request.');
   setExpanded(open, false);
 });
+handle('buddy:history', () => loadHistory());
+handle('buddy:saveHistory', history => saveHistory(history as History));
+handle('buddy:clearHistory', () => clearHistory());
+handle('buddy:clipboard', () => clipboard.readText('selection') || clipboard.readText());
 ipcMain.on('buddy:drag', (event, phase: unknown) => {
   if (!trusted(event) || !window) return;
   if (phase === 'end') {
@@ -319,14 +347,14 @@ handle('buddy:chat', async (id, input, search = false): Promise<ChatResult> => {
     sources = prepared.sources;
     trimmed = prepared.trimmed;
     controller.signal.throwIfAborted();
-    await streamReply({ ...settings, systemPrompt: prepared.systemPrompt }, key, prepared.request, {
+    const usage = await streamReply({ ...settings, systemPrompt: prepared.systemPrompt }, key, prepared.request, {
       signal: controller.signal,
       onText: text => {
         reply += text;
         if (window && !window.isDestroyed()) window.webContents.send('buddy:chunk', { id, text });
       },
     });
-    return { text: reply, sources, ...(trimmed ? { trimmed } : {}) };
+    return { text: reply, sources, ...(trimmed ? { trimmed } : {}), ...(usage ? { usage } : {}) };
   } catch (error) {
     if (controller.signal.aborted) return { text: reply, sources, ...(trimmed ? { trimmed } : {}) };
     if (development) console.error('[buddy:chat]', error);
@@ -354,6 +382,7 @@ else {
     screen.on('display-removed', keepWindowOnScreen);
     screen.on('display-metrics-changed', keepWindowOnScreen);
     try { globalShortcut.register(summonShortcut, () => summonWindow()); } catch { /* shortcut in use */ }
+    try { globalShortcut.register(selectionShortcut, () => askSelection()); } catch { /* shortcut in use */ }
     ensureWindow();
   });
   app.on('activate', () => summonWindow(true));

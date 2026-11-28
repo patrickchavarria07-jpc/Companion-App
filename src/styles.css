@@ -127,6 +127,11 @@ textarea { resize: vertical; }
 .attachment span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attachment button, .reset { background: transparent; color: var(--muted); border: 0; }
 .reset { margin-top: 5px; font-size: 11px; padding: 2px 0; text-decoration: underline; }
+.notice { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 7px 12px; border-bottom: 1px solid var(--edge); background: #1c2d37; font-size: 11px; flex: none; }
+.notice button { background: transparent; color: var(--muted); border: 0; text-decoration: underline; font-size: 11px; }
+.edit-box { display: grid; gap: 6px; }
+.edit-box textarea { width: 100%; resize: vertical; }
+.edit-actions { display: flex; align-items: center; gap: 8px; }
 .settings { flex: 1; min-height: 0; padding: 5px 16px 16px; overflow: auto; }
 .settings fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 10px; }
 .settings label { display: grid; gap: 4px; font-size: 12px; }

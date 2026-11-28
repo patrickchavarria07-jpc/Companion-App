@@ -16,6 +16,10 @@ const buddy: Buddy = {
   remove: name => ipcRenderer.invoke('buddy:remove', name),
   chat: (id, messages, search) => ipcRenderer.invoke('buddy:chat', id, messages, search),
   cancel: () => ipcRenderer.send('buddy:cancel'),
+  history: () => ipcRenderer.invoke('buddy:history'),
+  saveHistory: history => ipcRenderer.invoke('buddy:saveHistory', history),
+  clearHistory: () => ipcRenderer.invoke('buddy:clearHistory'),
+  clipboard: () => ipcRenderer.invoke('buddy:clipboard'),
   onChunk: callback => {
     const listener = (_event: Electron.IpcRendererEvent, chunk: StreamEvent) => callback(chunk);
     ipcRenderer.on('buddy:chunk', listener);
@@ -25,6 +29,11 @@ const buddy: Buddy = {
     const listener = (_event: Electron.IpcRendererEvent, open: boolean) => callback(open);
     ipcRenderer.on('buddy:open', listener);
     return () => ipcRenderer.removeListener('buddy:open', listener);
+  },
+  onSelection: callback => {
+    const listener = (_event: Electron.IpcRendererEvent, text: string) => callback(text);
+    ipcRenderer.on('buddy:selection', listener);
+    return () => ipcRenderer.removeListener('buddy:selection', listener);
   },
 };
 contextBridge.exposeInMainWorld('buddy', buddy);

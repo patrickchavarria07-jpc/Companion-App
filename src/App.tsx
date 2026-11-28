@@ -1,19 +1,38 @@
 import {
-  useEffect, useRef, useState,
+  useCallback, useEffect, useRef, useState,
   type DragEvent, type PointerEvent, type UIEvent,
 } from 'react';
 import { flushSync } from 'react-dom';
 import {
   fitConversation, supportedExtensions,
-  type Attachment, type Message, type Settings, type WebSource,
+  type Attachment, type History, type HistoryAttachment, type Message, type Settings, type StoredMessage, type Usage, type WebSource,
 } from '../shared/protocol';
 import { api, errorText, providerNames } from './api';
 import { Bot } from './Bot';
 import { Markdown } from './Markdown';
 import { SettingsView } from './SettingsView';
 
-type ChatMessage = Message & { id: string; sources?: WebSource[] };
+type ChatMessage = Message & { id: string; sources?: WebSource[]; search?: boolean };
 type ConfirmKind = 'quit' | 'clear' | null;
+
+/** Renders token accounting from a provider into a short status string. */
+function formatTokens(usage: Usage): string {
+  if (usage.totalTokens != null) return usage.totalTokens.toLocaleString() + ' tokens';
+  const parts: string[] = [];
+  if (usage.promptTokens != null) parts.push(usage.promptTokens.toLocaleString() + ' in');
+  if (usage.completionTokens != null) parts.push(usage.completionTokens.toLocaleString() + ' out');
+  return parts.length ? parts.join(' / ') : 'token usage unavailable';
+}
+
+/** Maps a rendered chat message back to the shape persisted in history.json. */
+function toStored(message: ChatMessage): StoredMessage {
+  return {
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    ...(message.sources?.length ? { sources: message.sources } : {}),
+  };
+}
 
 const busyDropMessage = 'Wait for the current task to finish before attaching files.';
 const acceptTypes = supportedExtensions.join(',');
@@ -49,6 +68,11 @@ export default function App() {
   const [atBottom, setAtBottom] = useState(true);
   const [copiedId, setCopiedId] = useState('');
   const [confirmKind, setConfirmKind] = useState<ConfirmKind>(null);
+  const [usage, setUsage] = useState<Usage>();
+  const [hydrated, setHydrated] = useState(false);
+  const [restoredAttachments, setRestoredAttachments] = useState<HistoryAttachment[]>([]);
+  const [editingId, setEditingId] = useState('');
+  const [editText, setEditText] = useState('');
 
   const pending = useRef(false);
   const attachCancelled = useRef(false);
@@ -94,14 +118,63 @@ export default function App() {
       setOpen(nextOpen);
     });
 
+    const offSelection = api.onSelection(text => {
+      setDraft(text);
+      void api.expand(true);
+    });
+
     return () => {
       if (frameRef.current !== null && typeof cancelAnimationFrame === 'function') {
         cancelAnimationFrame(frameRef.current);
       }
       offChunk();
       offOpen?.();
+      offSelection();
     };
   }, []);
+
+  // Restore the conversation saved from the previous session once on launch.
+  useEffect(() => {
+    void api.history()
+      .then(loaded => {
+        if (loaded && (loaded.messages.length || loaded.attachments.length)) {
+          setMessages(loaded.messages.map((message): ChatMessage => ({ ...message })));
+          if (loaded.attachments.length) setRestoredAttachments(loaded.attachments);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setHydrated(true));
+  }, []);
+
+  const buildHistory = useCallback((): History => ({
+    version: 1,
+    savedAt: Date.now(),
+    messages: messages.map(toStored),
+    attachments: files.map(file => ({
+      name: file.name,
+      characters: file.characters,
+      ...(file.excerpted ? { excerpted: true } : {}),
+    })),
+  }), [messages, files]);
+
+  // Persist the conversation (debounced) whenever it or its attachments change, after the initial restore.
+  useEffect(() => {
+    if (!hydrated) return;
+    const timer = window.setTimeout(() => {
+      void api.saveHistory(buildHistory()).catch(() => {});
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [messages, files, hydrated, buildHistory]);
+
+  // Best-effort flush when the page is being torn down (e.g. before the app quits).
+  useEffect(() => {
+    function flush() {
+      if (!hydrated) return;
+      void api.saveHistory(buildHistory()).catch(() => {});
+    }
+    window.addEventListener('pagehide', flush);
+    return () => window.removeEventListener('pagehide', flush);
+  }, [messages, files, hydrated, buildHistory]);
 
   // Follow new content only while the reader is at the bottom, so scrolling up to read isn't interrupted.
   useEffect(() => {
@@ -221,16 +294,18 @@ export default function App() {
     void attach(Array.from(event.dataTransfer.files));
   }
 
-  async function send(text: string, search = false) {
-    const trimmedText = text.trim();
+  /**
+   * Runs one turn: fits the conversation, streams the reply, and appends it. Shared by Send,
+   * Regenerate, and Edit-and-resend so every entry point behaves identically.
+   */
+  async function runTurn(conversation: ChatMessage[], search: boolean) {
+    const trimmedText = conversation.at(-1)?.content.trim() ?? '';
     if (!trimmedText || pending.current) return;
     if (search && settings?.searchKeySource === 'none') {
       setError('Add a Tavily API key in Settings before using Web search.');
       return;
     }
 
-    const user: ChatMessage = { id: crypto.randomUUID(), role: 'user', content: trimmedText };
-    const conversation = [...messages, user];
     let fittedPayload: Message[];
     let clientTrimmed: number;
     try {
@@ -252,6 +327,7 @@ export default function App() {
     setDraft('');
     setAnswer('');
     setError('');
+    setUsage(undefined);
     setActiveModel(settings ? providerNames[settings.provider] + ' · ' + settings.model : '');
     setStatus(search ? 'Searching the web and preparing a reply…' : 'Thinking…');
     setBusy(true);
@@ -264,6 +340,7 @@ export default function App() {
       active.text = result.text;
       sources = result.sources;
       if (result.trimmed) trimmedTurns += result.trimmed;
+      if (result.usage) setUsage(result.usage);
       if (result.error) throw new Error(result.error);
     } catch (err) {
       failed = true;
@@ -277,7 +354,7 @@ export default function App() {
         setMessages([...conversation, { id: crypto.randomUUID(), role: 'assistant', content: active.text, sources }]);
       } else if (failed || active.stopped) {
         setMessages(messages);
-        setDraft(user.content);
+        setDraft(conversation.at(-1)?.content ?? '');
       }
       request.current = null;
       pending.current = false;
@@ -290,6 +367,69 @@ export default function App() {
         : trimmedTurns > 0
           ? `Older messages (${trimmedTurns}) were omitted to fit the context limit.`
           : '');
+    }
+  }
+
+  async function send(text: string, search = false) {
+    const trimmedText = text.trim();
+    if (!trimmedText || pending.current) return;
+    const user: ChatMessage = { id: crypto.randomUUID(), role: 'user', content: trimmedText, search };
+    await runTurn([...messages, user], search);
+  }
+
+  /** Re-runs the user turn that produced the given assistant reply, discarding later messages. */
+  async function regenerate(assistantId: string) {
+    if (busy) return;
+    const index = messages.findIndex(message => message.id === assistantId);
+    if (index < 1) return;
+    const previous = messages[index - 1];
+    if (previous.role !== 'user') return;
+    await runTurn(messages.slice(0, index), Boolean(previous.search));
+  }
+
+  function startEdit(id: string, content: string) {
+    if (busy) return;
+    setEditingId(id);
+    setEditText(content);
+  }
+
+  function cancelEdit() {
+    setEditingId('');
+    setEditText('');
+  }
+
+  /** Saves an edited user message and re-runs the conversation from that point. */
+  async function saveEdit(id: string) {
+    const next = editText.trim();
+    if (!next) {
+      cancelEdit();
+      return;
+    }
+    const index = messages.findIndex(message => message.id === id);
+    if (index < 0 || messages[index].role !== 'user') {
+      cancelEdit();
+      return;
+    }
+    const search = Boolean(messages[index].search);
+    const edited: ChatMessage = { ...messages[index], content: next };
+    setEditingId('');
+    setEditText('');
+    await runTurn([...messages.slice(0, index), edited], search);
+  }
+
+  /** Fills the composer with the current clipboard/selection text so you can ask about it. */
+  async function askClipboard() {
+    if (pending.current) return;
+    try {
+      const text = await api.clipboard();
+      if (!text.trim()) {
+        setError('The clipboard is empty. Copy some text first, then try again.');
+        return;
+      }
+      await expand(true);
+      setDraft(text);
+    } catch (err) {
+      setError(errorText(err));
     }
   }
 
@@ -417,6 +557,9 @@ export default function App() {
               setMessages([]);
               setError('');
               setStatus('');
+              setUsage(undefined);
+              setRestoredAttachments([]);
+              void api.clearHistory().catch(() => {});
               setConfirmKind(null);
             }}>Clear chat</button>
             <button type="button" className="reset" onClick={() => setConfirmKind(null)}>Cancel</button>
@@ -444,6 +587,13 @@ export default function App() {
             }}
           />
         </>
+      )}
+
+      {restoredAttachments.length > 0 && (
+        <div className="notice" role="status">
+          <span>Restored your last conversation. Re-attach {restoredAttachments.length} document(s) to keep discussing them.</span>
+          <button type="button" onClick={() => setRestoredAttachments([])}>Dismiss</button>
+        </div>
       )}
 
       <section className="conversation" aria-label="Conversation" onScroll={scrolled} hidden={settingsOpen}>
@@ -478,6 +628,30 @@ export default function App() {
                     {copiedId === message.id ? 'Copied' : 'Copy'}
                   </button>
                 )}
+                {message.role === 'assistant' && (
+                  <button
+                    type="button"
+                    className="msg-action"
+                    aria-label="Regenerate reply"
+                    title="Regenerate reply"
+                    disabled={busy}
+                    onClick={() => void regenerate(message.id)}
+                  >
+                    Retry
+                  </button>
+                )}
+                {message.role === 'user' && editingId !== message.id && (
+                  <button
+                    type="button"
+                    className="msg-action"
+                    aria-label="Edit message"
+                    title="Edit message"
+                    disabled={busy}
+                    onClick={() => startEdit(message.id, message.content)}
+                  >
+                    Edit
+                  </button>
+                )}
                 <button
                   type="button"
                   className="msg-action"
@@ -490,9 +664,40 @@ export default function App() {
                 </button>
               </div>
             </div>
-            {message.role === 'assistant'
-              ? <Markdown text={message.content} sources={message.sources} />
-              : <div className="plain">{message.content}</div>}
+            {message.role === 'user' && editingId === message.id ? (
+              <div className="edit-box">
+                <textarea
+                  aria-label="Edit your message"
+                  rows={3}
+                  value={editText}
+                  onChange={event => setEditText(event.target.value)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                      event.preventDefault();
+                      void saveEdit(message.id);
+                    } else if (event.key === 'Escape') {
+                      event.preventDefault();
+                      cancelEdit();
+                    }
+                  }}
+                />
+                <div className="edit-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy || !editText.trim()}
+                    onClick={() => void saveEdit(message.id)}
+                  >
+                    Update
+                  </button>
+                  <button type="button" className="reset" onClick={cancelEdit}>Cancel</button>
+                </div>
+              </div>
+            ) : message.role === 'assistant' ? (
+              <Markdown text={message.content} sources={message.sources} />
+            ) : (
+              <div className="plain">{message.content}</div>
+            )}
             {!!message.sources?.length && (
               <div className="markdown web-sources">
                 <strong>Web sources</strong>
@@ -537,7 +742,11 @@ export default function App() {
           </div>
         )}
         {error && <div role="alert" className="error">{error}</div>}
-        <div className="status" role="status">{over ? (busy ? busyDropMessage : 'Drop to attach') : status}</div>
+        <div className="status" role="status">
+          {over ? (busy ? busyDropMessage : 'Drop to attach') : (
+            status + (usage && !busy ? ' · ' + formatTokens(usage) : '')
+          )}
+        </div>
         <form className="composer" onSubmit={event => { event.preventDefault(); void send(draft); }}>
           <input
             type="file"
@@ -550,6 +759,16 @@ export default function App() {
               event.currentTarget.value = '';
             }}
           />
+          <button
+            type="button"
+            className="icon"
+            disabled={busy}
+            title="Ask about copied text (global shortcut Ctrl/Cmd+Shift+C)"
+            aria-label="Ask about copied text"
+            onClick={() => void askClipboard()}
+          >
+            ⧉
+          </button>
           <button
             type="button"
             className="icon"

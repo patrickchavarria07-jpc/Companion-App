@@ -20,6 +20,7 @@ function makeSettings(provider: Provider = 'gemini', overrides: Partial<Settings
 
 let chunkListeners: ((chunk: StreamEvent) => void)[] = [];
 let openListeners: ((open: boolean) => void)[] = [];
+let selectionListeners: ((text: string) => void)[] = [];
 
 const buddyMock: Buddy = {
   expand: vi.fn(async () => {}),
@@ -38,6 +39,10 @@ const buddyMock: Buddy = {
   remove: vi.fn(async () => {}),
   chat: vi.fn(async () => ({ text: 'Final answer [1]', sources: [{ title: 'Source One', url: 'https://example.com/1' }] })),
   cancel: vi.fn(),
+  history: vi.fn(async () => null),
+  saveHistory: vi.fn(async () => {}),
+  clearHistory: vi.fn(async () => {}),
+  clipboard: vi.fn(async () => ''),
   onChunk: callback => {
     chunkListeners.push(callback);
     return () => { chunkListeners = chunkListeners.filter(item => item !== callback); };
@@ -45,6 +50,10 @@ const buddyMock: Buddy = {
   onOpen: callback => {
     openListeners.push(callback);
     return () => { openListeners = openListeners.filter(item => item !== callback); };
+  },
+  onSelection: callback => {
+    selectionListeners.push(callback);
+    return () => { selectionListeners = selectionListeners.filter(item => item !== callback); };
   },
 };
 
@@ -57,6 +66,7 @@ let root: Root;
 beforeEach(() => {
   chunkListeners = [];
   openListeners = [];
+  selectionListeners = [];
   vi.clearAllMocks();
   vi.mocked(buddyMock.settings).mockImplementation(async (provider?: Provider) => makeSettings(provider ?? 'gemini'));
   container = document.createElement('div');
@@ -74,6 +84,11 @@ async function renderOpenedApp() {
   const openBtn = container.querySelector('button[aria-label="Open Research Buddy"]') as HTMLButtonElement;
   expect(openBtn).toBeTruthy();
   await act(async () => { openBtn.click(); });
+}
+
+/** Flushes pending microtasks/macrotasks so async effect updates (history load, autosave) settle. */
+async function flush() {
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
 }
 
 function setInputValue(element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, value: string) {
@@ -193,5 +208,99 @@ describe('App and SettingsView', () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     });
     expect(container.querySelector('section.settings')).toBeNull();
+  });
+
+  it('restores the saved conversation on launch and shows a re-attach notice', async () => {
+    vi.mocked(buddyMock.history).mockResolvedValueOnce({
+      version: 1,
+      savedAt: Date.now(),
+      messages: [
+        { id: 'u1', role: 'user', content: 'Previous question' },
+        { id: 'a1', role: 'assistant', content: 'Previous answer' },
+      ],
+      attachments: [{ name: 'notes.pdf', characters: 900 }],
+    });
+    await renderOpenedApp();
+    await flush();
+    expect(container.textContent).toContain('Previous question');
+    expect(container.textContent).toContain('Previous answer');
+    const notice = container.querySelector('.notice');
+    expect(notice?.textContent).toContain('Re-attach 1 document');
+    const dismiss = [...container.querySelectorAll<HTMLButtonElement>('.notice button')].find(btn => btn.textContent === 'Dismiss')!;
+    await act(async () => { dismiss.click(); });
+    expect(container.querySelector('.notice')).toBeNull();
+  });
+
+  it('saves the conversation to disk as messages and attachments change', async () => {
+    await renderOpenedApp();
+    const textarea = container.querySelector('textarea[aria-label="Your message"]') as HTMLTextAreaElement;
+    await act(async () => { setInputValue(textarea, 'A question worth keeping'); });
+    await act(async () => { [...container.querySelectorAll('button')].find(btn => btn.textContent === 'Send')!.click(); });
+    // The autosave is debounced (~400ms); wait for it to flush.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 500)); });
+    expect(buddyMock.saveHistory).toHaveBeenCalled();
+    const saved = vi.mocked(buddyMock.saveHistory).mock.calls.at(-1)![0] as { messages: { content: string }[] };
+    expect(saved.messages.some(m => m.content === 'A question worth keeping')).toBe(true);
+  });
+
+  it('regenerates an assistant reply via Retry without adding a duplicate user message', async () => {
+    vi.mocked(buddyMock.chat).mockImplementation(async () => ({ text: 'Regenerated answer', sources: [] }));
+    await renderOpenedApp();
+    const textarea = container.querySelector('textarea[aria-label="Your message"]') as HTMLTextAreaElement;
+    await act(async () => { setInputValue(textarea, 'First question'); });
+    await act(async () => { [...container.querySelectorAll('button')].find(btn => btn.textContent === 'Send')!.click(); });
+    expect(container.querySelectorAll('.message').length).toBe(2);
+
+    const retry = [...container.querySelectorAll<HTMLButtonElement>('button')].find(btn => btn.textContent === 'Retry')!;
+    await act(async () => { retry.click(); });
+
+    expect(buddyMock.chat).toHaveBeenCalledTimes(2);
+    const payload = vi.mocked(buddyMock.chat).mock.calls.at(-1)![1] as { role: string }[];
+    expect(payload.filter(m => m.role === 'user')).toHaveLength(1);
+    expect(container.textContent).toContain('Regenerated answer');
+  });
+
+  it('edits a user message and re-runs the conversation from that point', async () => {
+    const replies = ['Original answer', 'Edited answer'];
+    let calls = 0;
+    vi.mocked(buddyMock.chat).mockImplementation(async () => ({ text: replies[calls++], sources: [] }));
+    await renderOpenedApp();
+    const textarea = container.querySelector('textarea[aria-label="Your message"]') as HTMLTextAreaElement;
+    await act(async () => { setInputValue(textarea, 'Original question'); });
+    await act(async () => { [...container.querySelectorAll('button')].find(btn => btn.textContent === 'Send')!.click(); });
+    expect(container.textContent).toContain('Original answer');
+
+    const editBtn = [...container.querySelectorAll<HTMLButtonElement>('button')].find(btn => btn.textContent === 'Edit')!;
+    await act(async () => { editBtn.click(); });
+    const editBox = container.querySelector('.edit-box textarea') as HTMLTextAreaElement;
+    expect(editBox).toBeTruthy();
+    await act(async () => { setInputValue(editBox, 'Edited question'); });
+    await act(async () => { [...container.querySelectorAll<HTMLButtonElement>('.edit-box button')].find(btn => btn.textContent === 'Update')!.click(); });
+
+    expect(buddyMock.chat).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('Edited answer');
+    expect(container.textContent).toContain('Edited question');
+    expect(container.textContent).not.toContain('Original question');
+  });
+
+  it('fills the composer when the global selection shortcut pushes text', async () => {
+    await renderOpenedApp();
+    expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('');
+    await act(async () => { selectionListeners.forEach(fn => fn('Selected paragraph from a paper')); });
+    expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Selected paragraph from a paper');
+    expect(buddyMock.expand).toHaveBeenCalledWith(true);
+  });
+
+  it('shows token usage in the status line after a reply that reports it', async () => {
+    vi.mocked(buddyMock.chat).mockImplementationOnce(async () => ({
+      text: 'Answer',
+      sources: [],
+      usage: { totalTokens: 1234, promptTokens: 1000, completionTokens: 234 },
+    }));
+    await renderOpenedApp();
+    const textarea = container.querySelector('textarea[aria-label="Your message"]') as HTMLTextAreaElement;
+    await act(async () => { setInputValue(textarea, 'How many?'); });
+    await act(async () => { [...container.querySelectorAll('button')].find(btn => btn.textContent === 'Send')!.click(); });
+    expect(container.querySelector('.status')?.textContent).toContain('1,234 tokens');
   });
 });

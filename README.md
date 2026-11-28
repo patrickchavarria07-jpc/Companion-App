@@ -19,6 +19,16 @@ Drop a PDF or text file onto the bot or panel, or use the `＋` attachment butto
 
 Replies are rendered as Markdown with one-click **Copy**, per-message delete (`×`), and **Export** (`.md`) for the whole conversation. Web links and inline `[1]` citations open in your default browser, and images appear as links rather than loading remote content. If you scroll up while a reply is streaming, the view stays where you are; use **↓ Latest** to jump back down.
 
+The conversation is **saved automatically between sessions** (debounced to `history.json` in the OS userData directory), so quitting and reopening keeps your chat. Documents stay in memory only — after restart, the chat text returns but you'll need to re-attach the source files (a banner reminds you which ones). **New chat** clears and forgets the saved conversation. Token usage (when the provider reports it) is shown in the status line after each reply.
+
+## Ask about what you're reading
+
+Select any text anywhere on your desktop and press `Ctrl+Shift+C` (or `Cmd+Shift+C`), or pick **Ask about clipboard** from the tray menu, or click the **⧉** button in the composer. The selected or copied text is dropped into the composer so you can ask Research Buddy about it without leaving your current window. The floating widget is built for exactly this: ask about whatever you just highlighted.
+
+## Refine replies
+
+Each assistant reply has a **Retry** button to regenerate it, and each of your messages has **Edit** to change the text and re-run the conversation from that point (press `Ctrl/Cmd+Enter` to save, `Esc` to cancel). This makes it easy to iterate on a question without losing the surrounding context.
+
 ## Connect a provider
 
 Open **Settings**, select Gemini, Groq, OpenRouter, or Ollama, and enter the model ID. For a hosted provider, add your API key and save. Free model availability, quotas, and account requirements vary by provider. OpenRouter defaults to its free-model router. For Ollama, start the local server and pull the selected model, for example with `ollama pull llama3.2`. The app talks to `127.0.0.1:11434` by default; enter a custom **Ollama host** in Settings (or set `OLLAMA_HOST`, for example `OLLAMA_HOST=gpu-box:11434`) to use another address. When attachments make a request larger than Ollama's default context window, the app raises `num_ctx` based on the UTF-8 byte size of the prompt so documents (including CJK text) are not silently truncated. Larger windows use more memory.
@@ -31,7 +41,7 @@ The app stores provider and Tavily keys encrypted with Electron `safeStorage` in
 
 The app also reads `GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, and `TAVILY_API_KEY` from the environment, in both development and packaged builds. Settings shows when an environment key is in use, and a key saved in Settings takes precedence. In development (`npm run dev`), the app also loads these from a `.env` file; copy `.env.example` to get started.
 
-Chat and attachments live in memory until you quit or the window reloads. **New chat** clears the messages (after confirmation) and keeps attached documents available. Attachments totaling up to 60,000 characters are placed at the start of the conversation so follow-up questions can reuse provider/Ollama KV caches; larger documents (up to 300,000 characters per document and 600,000 characters across up to 10 attachments) automatically select up to 60,000 characters of the most relevant pages or sections per question.
+Chat is saved automatically and restored the next time you open the app; attached documents live in memory until you quit or reload the window. **New chat** clears the messages (after confirmation) and forgets the saved conversation, while keeping in-memory attached documents available for the current session. Attachments totaling up to 60,000 characters are placed at the start of the conversation so follow-up questions can reuse provider/Ollama KV caches; larger documents (up to 300,000 characters per document and 600,000 characters across up to 10 attachments) automatically select up to 60,000 characters of the most relevant pages or sections per question.
 
 PDFs need a readable text layer. Run OCR separately for scanned PDFs, then attach the resulting file. The app accepts up to 10 attachments, files up to 20 MB, and PDFs up to 300 pages. Up to 100 recent messages / 100,000 conversation characters are sent per turn, automatically omitting older turns when a long conversation grows past the limit. PDFs are parsed in an isolated utility process that can be cancelled at any time and is stopped after 60 seconds. If a model sends nothing for 2 minutes, the request stops and keeps any partial reply.
 
